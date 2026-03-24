@@ -40,6 +40,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'django_mongodb_backend',
     'corsheaders',
+    'rest_framework',
+    'drf_yasg',
     'orthanc',
 ]
 
@@ -137,3 +139,9 @@ MIGRATION_MODULES = {
     'auth': 'mongo_migrations.auth',
     'contenttypes': 'mongo_migrations.contenttypes',
 }
+
+SWAGGER_SETTINGS = {
+    'USE_SESSION_AUTH': False,
+}
+
+ORTHANC_URL = "https://orthancpinguland-production.up.railway.app"

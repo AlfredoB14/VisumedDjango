@@ -1,3 +1,8 @@
-from django.db import models
+from .clinical.models import Doctor, Patient, Report, Study
 
-# Create your models here.
+__all__ = [
+    'Doctor',
+    'Patient',
+    'Study',
+    'Report',
+]

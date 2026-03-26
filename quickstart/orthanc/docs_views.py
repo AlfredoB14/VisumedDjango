@@ -9,6 +9,7 @@ doctor_id_param = openapi.Parameter('doctor_id', openapi.IN_PATH, description='D
 study_id_param = openapi.Parameter('study_id', openapi.IN_PATH, description='Study ObjectId or Orthanc study id depending on endpoint', type=openapi.TYPE_STRING)
 report_id_param = openapi.Parameter('report_id', openapi.IN_PATH, description='Report ObjectId', type=openapi.TYPE_STRING)
 instance_id_param = openapi.Parameter('instance_id', openapi.IN_PATH, description='Orthanc instance id', type=openapi.TYPE_STRING)
+orthanc_study_id_param = openapi.Parameter('orthanc_study_id', openapi.IN_PATH, description='Orthanc study id', type=openapi.TYPE_STRING)
 upload_dicom_file_param = openapi.Parameter('dicom_file', openapi.IN_FORM, description='.dcm file', type=openapi.TYPE_FILE, required=True)
 upload_patient_id_param = openapi.Parameter('patient_id', openapi.IN_FORM, description='Patient ObjectId', type=openapi.TYPE_STRING, required=True)
 upload_referring_doctor_id_param = openapi.Parameter('referring_doctor_id', openapi.IN_FORM, description='Doctor ObjectId', type=openapi.TYPE_STRING, required=True)
@@ -29,6 +30,30 @@ def docs_get_study_images(request, study_id):
 @swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[study_id_param], operation_description='Get study metadata from Orthanc')
 @api_view(['GET'])
 def docs_get_study_metadata(request, study_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[orthanc_study_id_param], operation_description='Get axial images from an Orthanc study')
+@api_view(['GET'])
+def docs_get_study_images_axial(request, orthanc_study_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[orthanc_study_id_param], operation_description='Get sagittal images from an Orthanc study')
+@api_view(['GET'])
+def docs_get_study_images_sagittal(request, orthanc_study_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[orthanc_study_id_param], operation_description='Get coronal images from an Orthanc study')
+@api_view(['GET'])
+def docs_get_study_images_coronal(request, orthanc_study_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[orthanc_study_id_param], operation_description='Debug Orthanc study series and tags')
+@api_view(['GET'])
+def docs_get_study_debug(request, orthanc_study_id):
     return Response(status=200)
 
 

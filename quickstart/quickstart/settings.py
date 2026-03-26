@@ -191,4 +191,6 @@ SWAGGER_SETTINGS = {
     'USE_SESSION_AUTH': False,
 }
 
-ORTHANC_URL = "https://orthancpinguland-production.up.railway.app"
+ORTHANC_URL = os.getenv('ORTHANC_URL', "https://orthancpinguland-production.up.railway.app")
+ORTHANC_USER = os.getenv('ORTHANC_USER', 'orthanc')
+ORTHANC_PASS = os.getenv('ORTHANC_PASS', 'orthanc')

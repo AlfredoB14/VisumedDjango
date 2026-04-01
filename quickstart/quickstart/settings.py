@@ -164,8 +164,18 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+# Permite que WhiteNoise encuentre estaticos de apps (drf-yasg, DRF, admin)
+# en desarrollo local aunque DEBUG este en False.
+IS_RAILWAY = bool(
+    os.getenv('RAILWAY_PROJECT_ID')
+    or os.getenv('RAILWAY_ENVIRONMENT')
+    or os.getenv('RAILWAY_ENVIRONMENT_NAME')
+)
+WHITENOISE_USE_FINDERS = env_bool('WHITENOISE_USE_FINDERS', not IS_RAILWAY)
+WHITENOISE_AUTOREFRESH = env_bool('WHITENOISE_AUTOREFRESH', DEBUG)
 
 # Railway corre detras de proxy y requiere confiar en X-Forwarded-Proto.
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

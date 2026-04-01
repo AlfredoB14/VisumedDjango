@@ -40,6 +40,9 @@ __all__ = [
     'report_detail',
     'classify_plane',
     'parse_orientation',
+    'parse_position',
+    'parse_instance_number',
+    'compute_slice_position',
     'fetch_series_tags',
     'BaseStudyPlaneView',
     'StudyAxialView',
@@ -96,6 +99,55 @@ def parse_orientation(value):
         return None
 
 
+def parse_position(value):
+    """
+    Acepta tanto string "x\\y\\z" como lista [x, y, z].
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.split('\\')
+    elif isinstance(value, list):
+        parts = value
+    else:
+        return None
+
+    if len(parts) != 3:
+        return None
+
+    try:
+        return [float(v) for v in parts]
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_instance_number(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        try:
+            return int(float(str(value)))
+        except (ValueError, TypeError):
+            return None
+
+
+def compute_slice_position(orientation, position):
+    """
+    Calcula coordenada escalar del corte proyectando la posicion sobre la normal.
+    """
+    if orientation is None or position is None:
+        return None
+    try:
+        row_vec = np.array(orientation[:3])
+        col_vec = np.array(orientation[3:])
+        normal = np.cross(row_vec, col_vec)
+        return float(np.dot(np.array(position), normal))
+    except Exception:
+        return None
+
+
 def fetch_series_tags(series_id, auth, base):
     """
     Fetch simplified tags for all DICOM instances in a series.
@@ -122,6 +174,9 @@ def fetch_series_tags(series_id, auth, base):
                     if isinstance(tags, dict):
                         tags['ImageOrientationPatient'] = parse_orientation(
                             tags.get('ImageOrientationPatient')
+                        )
+                        tags['ImagePositionPatient'] = parse_position(
+                            tags.get('ImagePositionPatient')
                         )
                     tags_dict[instance_id] = tags
             return series_id, tags_dict if tags_dict else None
@@ -154,8 +209,8 @@ class BaseStudyPlaneView(APIView):
             
             study_data = study_response.json()
             series_ids = study_data.get('Series', [])
-            
-            results = []
+
+            series_results = {series_id: [] for series_id in series_ids}
             with ThreadPoolExecutor(max_workers=5) as executor:
                 futures = {
                     executor.submit(fetch_series_tags, sid, auth, base): sid
@@ -174,16 +229,50 @@ class BaseStudyPlaneView(APIView):
                             plane = classify_plane(orientation)
                         except Exception:
                             continue
-                        
+
                         if plane == self.plane:
-                            results.append({
+                            series_results.setdefault(series_id, []).append({
                                 'instanceId': instance_id,
                                 'seriesId': series_id,
                                 'url': f"{base}/instances/{instance_id}/preview",
-                                'instanceNumber': tags.get('InstanceNumber'),
+                                'instanceNumber': parse_instance_number(tags.get('InstanceNumber')),
+                                '_slicePosition': compute_slice_position(
+                                    orientation,
+                                    parse_position(tags.get('ImagePositionPatient')),
+                                ),
                             })
-            
-            results.sort(key=lambda x: int(x.get('instanceNumber', 0)) if x.get('instanceNumber') else 0)
+
+            results = []
+            for series_id in series_ids:
+                series_instances = series_results.get(series_id, [])
+                if not series_instances:
+                    continue
+
+                has_slice_position = any(
+                    item.get('_slicePosition') is not None
+                    for item in series_instances
+                )
+
+                if has_slice_position:
+                    series_instances.sort(
+                        key=lambda x: (
+                            0 if x.get('_slicePosition') is not None else 1,
+                            x.get('_slicePosition') if x.get('_slicePosition') is not None else float('inf'),
+                            x.get('instanceNumber') if x.get('instanceNumber') is not None else float('inf'),
+                            x.get('instanceId'),
+                        )
+                    )
+                else:
+                    series_instances.sort(
+                        key=lambda x: (
+                            x.get('instanceNumber') if x.get('instanceNumber') is not None else float('inf'),
+                            x.get('instanceId'),
+                        )
+                    )
+
+                for item in series_instances:
+                    item.pop('_slicePosition', None)
+                    results.append(item)
             
             return Response(
                 {

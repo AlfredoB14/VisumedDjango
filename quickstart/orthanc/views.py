@@ -1,10 +1,12 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import numpy as np
 import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.renderers import JSONRenderer
 from django.conf import settings
+from django.core.cache import cache
+from rest_framework.renderers import JSONRenderer
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .integration.views import (
     get_all_studies,
@@ -44,12 +46,39 @@ __all__ = [
     'parse_instance_number',
     'compute_slice_position',
     'fetch_series_tags',
+    'StudyImagesIndexView',
     'BaseStudyPlaneView',
     'StudyAxialView',
     'StudySagittalView',
     'StudyCoronalView',
     'StudyDebugView',
 ]
+
+
+PLANES = ('axial', 'sagittal', 'coronal')
+
+
+def _is_truthy(value):
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _cache_ttl_seconds():
+    try:
+        return max(30, int(getattr(settings, 'ORTHANC_STUDY_INDEX_CACHE_TTL', 300)))
+    except (TypeError, ValueError):
+        return 300
+
+
+def _max_workers():
+    try:
+        value = int(getattr(settings, 'ORTHANC_STUDY_INDEX_MAX_WORKERS', 3))
+    except (TypeError, ValueError):
+        value = 3
+    return min(8, max(1, value))
+
+
+def _study_cache_key(orthanc_study_id):
+    return f"orthanc:study-image-index:v1:{orthanc_study_id}"
 
 
 def classify_plane(orientation):
@@ -171,19 +200,226 @@ def fetch_series_tags(series_id, auth, base):
                 instance_id = instance.get('ID')
                 if instance_id:
                     tags = instance.get('MainDicomTags', {})
-                    if isinstance(tags, dict):
-                        tags['ImageOrientationPatient'] = parse_orientation(
-                            tags.get('ImageOrientationPatient')
-                        )
-                        tags['ImagePositionPatient'] = parse_position(
-                            tags.get('ImagePositionPatient')
-                        )
+                    if not isinstance(tags, dict):
+                        tags = {}
                     tags_dict[instance_id] = tags
             return series_id, tags_dict if tags_dict else None
         else:
             return series_id, None
     except Exception:
         return series_id, None
+
+
+def _build_instance_record(instance_id, series_id, tags, base):
+    orientation = parse_orientation(tags.get('ImageOrientationPatient'))
+    if orientation is None:
+        return None
+
+    try:
+        plane = classify_plane(orientation)
+    except Exception:
+        return None
+
+    return {
+        'instanceId': instance_id,
+        'seriesId': series_id,
+        'url': f"{base}/instances/{instance_id}/preview",
+        'instanceNumber': parse_instance_number(tags.get('InstanceNumber')),
+        '_slicePosition': compute_slice_position(
+            orientation,
+            parse_position(tags.get('ImagePositionPatient')),
+        ),
+        'plane': plane,
+    }
+
+
+def _append_missing_series(series_results, series_id):
+    for plane in PLANES:
+        series_results[plane].setdefault(series_id, [])
+
+
+def _sort_series_instances(series_instances):
+    has_slice_position = any(
+        item.get('_slicePosition') is not None
+        for item in series_instances
+    )
+
+    if has_slice_position:
+        series_instances.sort(
+            key=lambda x: (
+                0 if x.get('_slicePosition') is not None else 1,
+                x.get('_slicePosition') if x.get('_slicePosition') is not None else float('inf'),
+                x.get('instanceNumber') if x.get('instanceNumber') is not None else float('inf'),
+                x.get('instanceId'),
+            )
+        )
+    else:
+        series_instances.sort(
+            key=lambda x: (
+                x.get('instanceNumber') if x.get('instanceNumber') is not None else float('inf'),
+                x.get('instanceId'),
+            )
+        )
+
+
+def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
+    study_url = f"{base}/studies/{orthanc_study_id}"
+    try:
+        study_response = requests.get(study_url, auth=auth, timeout=15)
+    except requests.exceptions.Timeout:
+        return None, 504
+    except requests.exceptions.ConnectionError:
+        return None, 503
+    except requests.exceptions.RequestException:
+        return None, 502
+
+    if study_response.status_code == 404:
+        return None, 404
+    if study_response.status_code != 200:
+        return None, 502
+
+    try:
+        study_data = study_response.json()
+    except ValueError:
+        return None, 502
+
+    series_ids = study_data.get('Series', [])
+    if not isinstance(series_ids, list):
+        series_ids = []
+    series_ids = [sid for sid in series_ids if isinstance(sid, str) and sid]
+    known_series_ids = set(series_ids)
+
+    series_results = {
+        plane: {series_id: [] for series_id in series_ids}
+        for plane in PLANES
+    }
+
+    classified_count = 0
+    instances_url = f"{base}/studies/{orthanc_study_id}/instances"
+    try:
+        instances_response = requests.get(instances_url, auth=auth, timeout=30)
+        instances_payload = instances_response.json() if instances_response.status_code == 200 else []
+    except Exception:
+        instances_payload = []
+
+    if isinstance(instances_payload, list):
+        for instance in instances_payload:
+            if not isinstance(instance, dict):
+                continue
+
+            instance_id = instance.get('ID')
+            series_id = instance.get('ParentSeries')
+            tags = instance.get('MainDicomTags', {})
+            if not instance_id or not series_id or not isinstance(tags, dict):
+                continue
+
+            if series_id not in known_series_ids:
+                known_series_ids.add(series_id)
+                series_ids.append(series_id)
+                _append_missing_series(series_results, series_id)
+
+            record = _build_instance_record(instance_id, series_id, tags, base)
+            if not record:
+                continue
+
+            plane = record.pop('plane')
+            series_results[plane][series_id].append(record)
+            classified_count += 1
+
+    if classified_count == 0 and series_ids:
+        series_results = {
+            plane: {series_id: [] for series_id in series_ids}
+            for plane in PLANES
+        }
+        with ThreadPoolExecutor(max_workers=_max_workers()) as executor:
+            futures = {
+                executor.submit(fetch_series_tags, sid, auth, base): sid
+                for sid in series_ids
+            }
+            for future in as_completed(futures):
+                series_id, series_tags = future.result()
+                if not series_tags:
+                    continue
+                for instance_id, tags in series_tags.items():
+                    record = _build_instance_record(instance_id, series_id, tags, base)
+                    if not record:
+                        continue
+                    plane = record.pop('plane')
+                    series_results[plane][series_id].append(record)
+
+    planes = {}
+    total_instances = 0
+    for plane in PLANES:
+        instances = []
+        for series_id in series_ids:
+            series_instances = series_results[plane].get(series_id, [])
+            if not series_instances:
+                continue
+
+            _sort_series_instances(series_instances)
+            for item in series_instances:
+                item.pop('_slicePosition', None)
+                instances.append(item)
+
+        planes[plane] = {
+            'total': len(instances),
+            'instances': instances,
+        }
+        total_instances += len(instances)
+
+    return {
+        'orthancStudyId': orthanc_study_id,
+        'seriesCount': len(series_ids),
+        'total': total_instances,
+        'planes': planes,
+    }, 200
+
+
+def _get_study_index(orthanc_study_id, force_refresh=False):
+    cache_key = _study_cache_key(orthanc_study_id)
+    if not force_refresh:
+        cached_data = cache.get(cache_key)
+        if isinstance(cached_data, dict):
+            return cached_data, True, 200
+
+    base = settings.ORTHANC_URL
+    auth = (settings.ORTHANC_USER, settings.ORTHANC_PASS)
+    index_data, status_code = _build_study_index_from_orthanc(orthanc_study_id, base, auth)
+
+    if status_code != 200 or not index_data:
+        return None, False, status_code
+
+    cache.set(cache_key, index_data, _cache_ttl_seconds())
+    return index_data, False, 200
+
+
+class StudyImagesIndexView(APIView):
+    """
+    Returns all study instances grouped by plane in a single response.
+    """
+    renderer_classes = [JSONRenderer]
+
+    def get(self, request, orthanc_study_id):
+        force_refresh = _is_truthy(request.query_params.get('refresh'))
+        index_data, cache_hit, status_code = _get_study_index(
+            orthanc_study_id,
+            force_refresh=force_refresh,
+        )
+
+        if status_code == 404:
+            return Response({'error': 'Study not found in Orthanc'}, status=404)
+        if status_code == 504:
+            return Response({'error': 'Orthanc timeout'}, status=504)
+        if status_code == 503:
+            return Response({'error': 'Orthanc unreachable'}, status=503)
+        if status_code != 200 or not index_data:
+            return Response({'error': 'Orthanc request failed'}, status=502)
+
+        payload = {
+            **index_data,
+            'cacheHit': cache_hit,
+        }
+        return Response(payload, status=200)
 
 
 class BaseStudyPlaneView(APIView):
@@ -194,106 +430,33 @@ class BaseStudyPlaneView(APIView):
     plane = None
     
     def get(self, request, orthanc_study_id):
-        try:
-            base = settings.ORTHANC_URL
-            auth = (settings.ORTHANC_USER, settings.ORTHANC_PASS)
-            
-            study_url = f"{base}/studies/{orthanc_study_id}"
-            study_response = requests.get(study_url, auth=auth, timeout=15)
-            
-            if study_response.status_code != 200:
-                return Response(
-                    {"error": "Study not found in Orthanc"},
-                    status=404
-                )
-            
-            study_data = study_response.json()
-            series_ids = study_data.get('Series', [])
+        force_refresh = _is_truthy(request.query_params.get('refresh'))
+        index_data, cache_hit, status_code = _get_study_index(
+            orthanc_study_id,
+            force_refresh=force_refresh,
+        )
 
-            series_results = {series_id: [] for series_id in series_ids}
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {
-                    executor.submit(fetch_series_tags, sid, auth, base): sid
-                    for sid in series_ids
-                }
-                for future in as_completed(futures):
-                    series_id, series_tags = future.result()
-                    if not series_tags:
-                        continue
-                    
-                    for instance_id, tags in series_tags.items():
-                        orientation = parse_orientation(tags.get('ImageOrientationPatient'))
-                        if orientation is None:
-                            continue
-                        try:
-                            plane = classify_plane(orientation)
-                        except Exception:
-                            continue
+        if status_code == 404:
+            return Response({'error': 'Study not found in Orthanc'}, status=404)
+        if status_code == 504:
+            return Response({'error': 'Orthanc timeout'}, status=504)
+        if status_code == 503:
+            return Response({'error': 'Orthanc unreachable'}, status=503)
+        if status_code != 200 or not index_data:
+            return Response({'error': 'Orthanc request failed'}, status=502)
 
-                        if plane == self.plane:
-                            series_results.setdefault(series_id, []).append({
-                                'instanceId': instance_id,
-                                'seriesId': series_id,
-                                'url': f"{base}/instances/{instance_id}/preview",
-                                'instanceNumber': parse_instance_number(tags.get('InstanceNumber')),
-                                '_slicePosition': compute_slice_position(
-                                    orientation,
-                                    parse_position(tags.get('ImagePositionPatient')),
-                                ),
-                            })
+        plane_data = index_data.get('planes', {}).get(self.plane, {'total': 0, 'instances': []})
 
-            results = []
-            for series_id in series_ids:
-                series_instances = series_results.get(series_id, [])
-                if not series_instances:
-                    continue
-
-                has_slice_position = any(
-                    item.get('_slicePosition') is not None
-                    for item in series_instances
-                )
-
-                if has_slice_position:
-                    series_instances.sort(
-                        key=lambda x: (
-                            0 if x.get('_slicePosition') is not None else 1,
-                            x.get('_slicePosition') if x.get('_slicePosition') is not None else float('inf'),
-                            x.get('instanceNumber') if x.get('instanceNumber') is not None else float('inf'),
-                            x.get('instanceId'),
-                        )
-                    )
-                else:
-                    series_instances.sort(
-                        key=lambda x: (
-                            x.get('instanceNumber') if x.get('instanceNumber') is not None else float('inf'),
-                            x.get('instanceId'),
-                        )
-                    )
-
-                for item in series_instances:
-                    item.pop('_slicePosition', None)
-                    results.append(item)
-            
-            return Response(
-                {
-                    'orthancStudyId': orthanc_study_id,
-                    'plane': self.plane,
-                    'total': len(results),
-                    'instances': results
-                },
-                status=200
-            )
-        
-        except requests.exceptions.Timeout:
-            return Response(
-                {"error": "Orthanc timeout"},
-                status=504
-            )
-        except requests.exceptions.ConnectionError:
-            return Response(
-                {"error": "Orthanc unreachable"},
-                status=503
-            )
+        return Response(
+            {
+                'orthancStudyId': orthanc_study_id,
+                'plane': self.plane,
+                'total': plane_data.get('total', 0),
+                'instances': plane_data.get('instances', []),
+                'cacheHit': cache_hit,
+            },
+            status=200,
+        )
 
 
 class StudyAxialView(BaseStudyPlaneView):

@@ -1,0 +1,86 @@
+CAMBIOS REQUERIDOS EN FRONTEND (SIN PAGINACION)
+================================================
+
+Objetivo
+--------
+Reducir requests repetidos al backend y Orthanc al navegar entre planos/imagenes.
+
+Nuevo endpoint principal
+------------------------
+GET /api/studies/{orthancStudyId}/images/index/
+
+Opcional:
+- Agregar ?refresh=1 para forzar reconstruccion del indice (ignora cache).
+
+Respuesta esperada
+------------------
+{
+  "orthancStudyId": "<id>",
+  "seriesCount": 3,
+  "total": 420,
+  "cacheHit": true,
+  "planes": {
+    "axial": {
+      "total": 180,
+      "instances": [
+        {
+          "instanceId": "...",
+          "seriesId": "...",
+          "url": "https://.../instances/.../preview",
+          "instanceNumber": 1
+        }
+      ]
+    },
+    "sagittal": {
+      "total": 120,
+      "instances": []
+    },
+    "coronal": {
+      "total": 120,
+      "instances": []
+    }
+  }
+}
+
+Endpoints legacy (siguen funcionando)
+-------------------------------------
+- GET /api/studies/{orthancStudyId}/images/axial/
+- GET /api/studies/{orthancStudyId}/images/sagittal/
+- GET /api/studies/{orthancStudyId}/images/coronal/
+
+Recomendacion: dejar de usar los 3 endpoints por separado y usar solo /images/index/.
+
+Flujo recomendado en frontend
+-----------------------------
+1) Al abrir un estudio:
+   - Hacer UNA llamada a /images/index/.
+   - Guardar respuesta en estado global del viewer (store/context).
+
+2) Al cambiar de plano (axial/sagital/coronal):
+   - NO volver a pedir backend.
+   - Tomar instances desde planes[plane].instances del estado local.
+
+3) Al moverse entre imagenes del mismo plano:
+   - NO volver a pedir lista.
+   - Solo cambiar indice local de la imagen actual.
+
+4) Solo en accion manual "Actualizar estudio":
+   - Llamar /images/index/?refresh=1.
+
+5) Para render de imagen:
+   - Usar la url de preview entregada por el indice, o
+   - Usar /api/instances/{instanceId}/rendered/?quality=90 si necesitan pasar por backend.
+
+Buenas practicas minimas
+------------------------
+- Cancelar requests viejos al cambiar rapido de estudio (AbortController).
+- Reusar cache del frontend por orthancStudyId.
+- No disparar refetch por cambios de ruta internos del viewer.
+
+Checklist rapido de migracion
+-----------------------------
+[ ] Crear servicio getStudyImageIndex(orthancStudyId, refresh=false)
+[ ] Cambiar viewer para leer planes del indice en memoria
+[ ] Remover llamadas secuenciales a axial/sagittal/coronal
+[ ] Mantener fallback temporal a endpoint legacy solo si falla index
+[ ] Agregar boton manual "Refrescar" que use refresh=1

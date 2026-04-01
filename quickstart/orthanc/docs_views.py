@@ -39,6 +39,12 @@ def docs_get_study_images_axial(request, orthanc_study_id):
     return Response(status=200)
 
 
+@swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[orthanc_study_id_param], operation_description='Get all study images grouped by plane in one response')
+@api_view(['GET'])
+def docs_get_study_images_index(request, orthanc_study_id):
+    return Response(status=200)
+
+
 @swagger_auto_schema(method='get', tags=['Orthanc'], manual_parameters=[orthanc_study_id_param], operation_description='Get sagittal images from an Orthanc study')
 @api_view(['GET'])
 def docs_get_study_images_sagittal(request, orthanc_study_id):

@@ -75,6 +75,19 @@ INSTALLED_APPS = [
 
 CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', False)
 CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS')
+CORS_ALLOW_LOCAL_ORIGINS = env_bool('CORS_ALLOW_LOCAL_ORIGINS', True)
+
+LOCAL_DEV_ORIGINS = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
+
+if CORS_ALLOW_LOCAL_ORIGINS:
+    for origin in LOCAL_DEV_ORIGINS:
+        if origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(origin)
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -181,6 +194,11 @@ WHITENOISE_AUTOREFRESH = env_bool('WHITENOISE_AUTOREFRESH', DEBUG)
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
+
+if CORS_ALLOW_LOCAL_ORIGINS:
+    for origin in LOCAL_DEV_ORIGINS:
+        if origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(origin)
 
 if not DEBUG:
     SESSION_COOKIE_SECURE = True

@@ -6,6 +6,7 @@ urlpatterns = [
     path('studies/', docs_views.docs_get_all_studies),
     path('studies/<str:study_id>/images/', docs_views.docs_get_study_images),
     path('studies/<str:study_id>/metadata/', docs_views.docs_get_study_metadata),
+    path('studies/<str:orthanc_study_id>/images/index/', docs_views.docs_get_study_images_index),
     path('studies/<str:orthanc_study_id>/images/axial/', docs_views.docs_get_study_images_axial),
     path('studies/<str:orthanc_study_id>/images/sagittal/', docs_views.docs_get_study_images_sagittal),
     path('studies/<str:orthanc_study_id>/images/coronal/', docs_views.docs_get_study_images_coronal),

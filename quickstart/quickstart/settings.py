@@ -36,6 +36,16 @@ def env_list(name: str, default: str = "") -> list[str]:
     value = os.getenv(name, default)
     return [item.strip() for item in value.split(",") if item.strip()]
 
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 PROJECT_ROOT = BASE_DIR.parent
@@ -72,6 +82,19 @@ INSTALLED_APPS = [
     'drf_yasg',
     'orthanc',
 ]
+
+# Cache en memoria con limite de entradas para evitar crecimiento excesivo.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'visumed-orthanc-cache',
+        'TIMEOUT': env_int('CACHE_DEFAULT_TIMEOUT', 300),
+        'OPTIONS': {
+            'MAX_ENTRIES': env_int('CACHE_MAX_ENTRIES', 32),
+            'CULL_FREQUENCY': env_int('CACHE_CULL_FREQUENCY', 2),
+        },
+    }
+}
 
 CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', False)
 CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS')
@@ -222,3 +245,6 @@ SWAGGER_SETTINGS = {
 ORTHANC_URL = os.getenv('ORTHANC_URL', "https://orthancpinguland-production.up.railway.app")
 ORTHANC_USER = os.getenv('ORTHANC_USER', 'orthanc')
 ORTHANC_PASS = os.getenv('ORTHANC_PASS', 'orthanc')
+ORTHANC_HTTP_TIMEOUT = env_int('ORTHANC_HTTP_TIMEOUT', 20)
+ORTHANC_STUDY_INDEX_CACHE_TTL = env_int('ORTHANC_STUDY_INDEX_CACHE_TTL', 300)
+ORTHANC_STUDY_INDEX_MAX_WORKERS = env_int('ORTHANC_STUDY_INDEX_MAX_WORKERS', 3)

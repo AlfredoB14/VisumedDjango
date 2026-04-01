@@ -1,12 +1,47 @@
 import requests
-from django.http import HttpResponse, JsonResponse
+from django.conf import settings
+from django.http import JsonResponse, StreamingHttpResponse
 from django.views.decorators.http import require_GET
 
 # Configuracion de Orthanc
-ORTHANC_URL = "https://orthancpinguland-production.up.railway.app"
+ORTHANC_URL = settings.ORTHANC_URL
 
 
-def orthanc_request(path, method="GET", data=None, params=None):
+def _orthanc_timeout_seconds():
+    try:
+        return max(5, int(getattr(settings, 'ORTHANC_HTTP_TIMEOUT', 20)))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _orthanc_auth():
+    user = getattr(settings, 'ORTHANC_USER', None)
+    password = getattr(settings, 'ORTHANC_PASS', None)
+    if user and password:
+        return (user, password)
+    return None
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return default
+
+
+def _stream_content(response, chunk_size=65536):
+    try:
+        for chunk in response.iter_content(chunk_size=chunk_size):
+            if chunk:
+                yield chunk
+    finally:
+        response.close()
+
+
+def orthanc_request(path, method="GET", data=None, params=None, stream=False):
     """Realiza solicitudes al servidor Orthanc."""
     url = f"{ORTHANC_URL}{path}"
     try:
@@ -15,6 +50,9 @@ def orthanc_request(path, method="GET", data=None, params=None):
             url=url,
             json=data,
             params=params,
+            auth=_orthanc_auth(),
+            timeout=_orthanc_timeout_seconds(),
+            stream=stream,
         )
         response.raise_for_status()
         return response
@@ -38,26 +76,33 @@ def get_study_images(request, study_id):
             return JsonResponse({"error": "No se pudo obtener las instancias del estudio"}, status=500)
 
         instances = response.json()
-        series_ids = {instance["ParentSeries"] for instance in instances}
+        if not isinstance(instances, list):
+            return JsonResponse({"error": "Orthanc devolvio un formato inesperado"}, status=502)
 
         series_numbers = {}
-        for series_id in series_ids:
-            series_response = orthanc_request(f"/series/{series_id}")
-            if series_response:
-                series_data = series_response.json()
-                series_number_str = series_data.get('MainDicomTags', {}).get('SeriesNumber', '0')
-                try:
-                    series_numbers[series_id] = int(series_number_str)
-                except ValueError:
-                    series_numbers[series_id] = 0
 
         instances_with_numbers = []
         for instance in instances:
+            if not isinstance(instance, dict):
+                continue
+
+            instance_id = instance.get("ID")
+            series_id = instance.get("ParentSeries")
+            tags = instance.get('MainDicomTags', {})
+            if not isinstance(tags, dict):
+                tags = {}
+
+            if not instance_id or not series_id:
+                continue
+
+            if series_id not in series_numbers:
+                series_numbers[series_id] = _safe_int(tags.get('SeriesNumber'), 0)
+
             instance_info = {
-                "id": instance["ID"],
-                "series_id": instance["ParentSeries"],
-                "series_number": series_numbers.get(instance["ParentSeries"], 0),
-                "instance_number": int(instance.get('MainDicomTags', {}).get('InstanceNumber', '0') or '0'),
+                "id": instance_id,
+                "series_id": series_id,
+                "series_number": series_numbers.get(series_id, 0),
+                "instance_number": _safe_int(tags.get('InstanceNumber'), 0),
             }
             instances_with_numbers.append(instance_info)
 
@@ -100,16 +145,20 @@ def get_rendered_instance(request, instance_id):
         except (ValueError, TypeError):
             quality = 90
 
-        response = orthanc_request(f"/instances/{instance_id}/rendered", params={"quality": quality})
+        response = orthanc_request(
+            f"/instances/{instance_id}/rendered",
+            params={"quality": quality},
+            stream=True,
+        )
         if not response:
             return JsonResponse({"error": "No se pudo obtener la imagen"}, status=500)
 
-        return HttpResponse(
-            response.content,
+        return StreamingHttpResponse(
+            _stream_content(response),
             content_type="image/jpeg",
             headers={
                 "Content-Disposition": f"inline; filename=instance-{instance_id}.jpg",
-                "Cache-Control": "public, max-age=86400",
+                "Cache-Control": "public, max-age=86400, stale-while-revalidate=60",
             },
         )
 

@@ -14,6 +14,7 @@ urlpatterns = [
     path('instances/<str:instance_id>/rendered/', docs_views.docs_get_rendered_instance),
     path('doctors/', docs_views.docs_doctors_collection),
     path('doctors/login/', docs_views.docs_doctor_login),
+    path('doctors/<str:doctor_id>/patients/', docs_views.docs_doctor_patients),
     path('doctors/<str:doctor_id>/', docs_views.docs_doctor_detail),
     path('patients/', docs_views.docs_patients_collection),
     path('patients/<str:patient_id>/', docs_views.docs_patient_detail),

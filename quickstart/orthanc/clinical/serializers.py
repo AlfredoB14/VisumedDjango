@@ -18,6 +18,7 @@ class PatientSerializer:
     def serialize(obj):
         return {
             'id': str(obj.pk),
+            'doctorId': str(obj.doctor_id) if obj.doctor_id else None,
             'firstName': obj.firstName,
             'lastName': obj.lastName,
             'email': obj.email,

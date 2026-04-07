@@ -278,7 +278,17 @@ def doctor_patients(request, doctor_id):
 @require_http_methods(['GET', 'POST'])
 def studies_collection(request):
     if request.method == 'GET':
-        studies = Study.objects.select_related('patient', 'referringDoctor', 'interpretingDoctor').all().order_by('-createdAt')
+        patient_id = request.GET.get('patientId')
+        studies = Study.objects.select_related('patient', 'referringDoctor', 'interpretingDoctor').all()
+
+        if patient_id:
+            try:
+                patient = Patient.objects.get(pk=patient_id)
+            except (Patient.DoesNotExist, ValidationError, ValueError):
+                return JsonResponse({'error': 'Patient not found'}, status=404)
+            studies = studies.filter(patient=patient)
+
+        studies = studies.order_by('-createdAt')
         return JsonResponse([StudySerializer.serialize(item) for item in studies], safe=False)
 
     payload = _parse_json_body(request)
@@ -292,7 +302,7 @@ def studies_collection(request):
 
     try:
         patient = Patient.objects.get(pk=payload['patientId'])
-    except Patient.DoesNotExist:
+    except (Patient.DoesNotExist, ValidationError, ValueError):
         return JsonResponse({'error': 'Patient not found'}, status=404)
 
     referring_doctor = None
@@ -388,6 +398,18 @@ def study_detail(request, study_id):
         return JsonResponse(StudySerializer.serialize(study))
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def patient_studies(request, patient_id):
+    try:
+        patient = Patient.objects.get(pk=patient_id)
+    except (Patient.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Patient not found'}, status=404)
+
+    studies = Study.objects.select_related('patient', 'referringDoctor', 'interpretingDoctor').filter(patient=patient).order_by('-createdAt')
+    return JsonResponse([StudySerializer.serialize(item) for item in studies], safe=False)
 
 
 @csrf_exempt

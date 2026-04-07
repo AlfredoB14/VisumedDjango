@@ -2,7 +2,7 @@ import json
 
 from django.test import TestCase
 
-from orthanc.clinical.models import Doctor, Patient
+from orthanc.clinical.models import Doctor, Patient, Study
 
 
 class DoctorPatientsEndpointTests(TestCase):
@@ -74,3 +74,39 @@ class DoctorPatientsEndpointTests(TestCase):
 
 		self.assertEqual(response.status_code, 404)
 		self.assertEqual(response.json()['error'], 'Doctor not found')
+
+	def test_patient_studies_endpoint_returns_only_patient_studies(self):
+		patient_1 = Patient.objects.create(firstName='P', lastName='One', doctor=self.doctor_1)
+		patient_2 = Patient.objects.create(firstName='P', lastName='Two', doctor=self.doctor_2)
+		s1 = Study.objects.create(orthancStudyId='ORTH-001', patient=patient_1)
+		s2 = Study.objects.create(orthancStudyId='ORTH-002', patient=patient_1)
+		Study.objects.create(orthancStudyId='ORTH-003', patient=patient_2)
+
+		response = self.client.get(f'/api/patients/{patient_1.pk}/studies-db/')
+
+		self.assertEqual(response.status_code, 200)
+		data = response.json()
+		ids = {item['id'] for item in data}
+		self.assertEqual(ids, {str(s1.pk), str(s2.pk)})
+		for item in data:
+			self.assertEqual(item['patientId'], str(patient_1.pk))
+
+	def test_studies_collection_can_filter_by_patient_id_query_param(self):
+		patient_1 = Patient.objects.create(firstName='Q', lastName='One', doctor=self.doctor_1)
+		patient_2 = Patient.objects.create(firstName='Q', lastName='Two', doctor=self.doctor_2)
+		s1 = Study.objects.create(orthancStudyId='ORTH-004', patient=patient_1)
+		Study.objects.create(orthancStudyId='ORTH-005', patient=patient_2)
+
+		response = self.client.get(f'/api/studies-db/?patientId={patient_1.pk}')
+
+		self.assertEqual(response.status_code, 200)
+		data = response.json()
+		self.assertEqual(len(data), 1)
+		self.assertEqual(data[0]['id'], str(s1.pk))
+		self.assertEqual(data[0]['patientId'], str(patient_1.pk))
+
+	def test_studies_collection_filter_by_invalid_patient_returns_404(self):
+		response = self.client.get('/api/studies-db/?patientId=invalid-patient-id')
+
+		self.assertEqual(response.status_code, 404)
+		self.assertEqual(response.json()['error'], 'Patient not found')

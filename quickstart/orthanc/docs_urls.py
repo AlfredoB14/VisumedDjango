@@ -17,6 +17,7 @@ urlpatterns = [
     path('doctors/<str:doctor_id>/patients/', docs_views.docs_doctor_patients),
     path('doctors/<str:doctor_id>/', docs_views.docs_doctor_detail),
     path('patients/', docs_views.docs_patients_collection),
+    path('patients/<str:patient_id>/studies-db/', docs_views.docs_patient_studies),
     path('patients/<str:patient_id>/', docs_views.docs_patient_detail),
     path('studies-db/', docs_views.docs_studies_collection),
     path('studies-db/<str:study_id>/', docs_views.docs_study_detail),

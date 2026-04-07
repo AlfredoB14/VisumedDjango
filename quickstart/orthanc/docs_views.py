@@ -5,6 +5,7 @@ from rest_framework.response import Response
 
 
 patient_id_param = openapi.Parameter('patient_id', openapi.IN_PATH, description='Patient ObjectId', type=openapi.TYPE_STRING)
+patient_id_query_param = openapi.Parameter('patientId', openapi.IN_QUERY, description='Filter studies by Patient ObjectId', type=openapi.TYPE_STRING, required=False)
 doctor_id_param = openapi.Parameter('doctor_id', openapi.IN_PATH, description='Doctor ObjectId', type=openapi.TYPE_STRING)
 doctor_id_query_param = openapi.Parameter('doctorId', openapi.IN_QUERY, description='Filter patients by Doctor ObjectId', type=openapi.TYPE_STRING, required=False)
 study_id_param = openapi.Parameter('study_id', openapi.IN_PATH, description='Study ObjectId or Orthanc study id depending on endpoint', type=openapi.TYPE_STRING)
@@ -194,7 +195,23 @@ def docs_patient_detail(request, patient_id):
     return Response(status=200)
 
 
-@swagger_auto_schema(method='get', tags=['Studies'], operation_description='List studies from DB')
+@swagger_auto_schema(
+    method='get',
+    tags=['Studies'],
+    manual_parameters=[patient_id_param],
+    operation_description='List studies-db assigned to a patient by id',
+)
+@api_view(['GET'])
+def docs_patient_studies(request, patient_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='get',
+    tags=['Studies'],
+    manual_parameters=[patient_id_query_param],
+    operation_description='List studies from DB (optional filter by patientId)',
+)
 @swagger_auto_schema(
     method='post',
     tags=['Studies'],

@@ -6,6 +6,7 @@ from rest_framework.response import Response
 
 patient_id_param = openapi.Parameter('patient_id', openapi.IN_PATH, description='Patient ObjectId', type=openapi.TYPE_STRING)
 doctor_id_param = openapi.Parameter('doctor_id', openapi.IN_PATH, description='Doctor ObjectId', type=openapi.TYPE_STRING)
+doctor_id_query_param = openapi.Parameter('doctorId', openapi.IN_QUERY, description='Filter patients by Doctor ObjectId', type=openapi.TYPE_STRING, required=False)
 study_id_param = openapi.Parameter('study_id', openapi.IN_PATH, description='Study ObjectId or Orthanc study id depending on endpoint', type=openapi.TYPE_STRING)
 report_id_param = openapi.Parameter('report_id', openapi.IN_PATH, description='Report ObjectId', type=openapi.TYPE_STRING)
 instance_id_param = openapi.Parameter('instance_id', openapi.IN_PATH, description='Orthanc instance id', type=openapi.TYPE_STRING)
@@ -77,7 +78,7 @@ def docs_get_rendered_instance(request, instance_id):
 @swagger_auto_schema(
     method='post',
     tags=['Doctors'],
-    operation_description='Create doctor',
+    operation_description='Create doctor. Required: firstName, lastName, email, role, passwordHash. Optional: phone.',
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=['firstName', 'lastName', 'email', 'role', 'passwordHash'],
@@ -88,6 +89,14 @@ def docs_get_rendered_instance(request, instance_id):
             'phone': openapi.Schema(type=openapi.TYPE_STRING),
             'role': openapi.Schema(type=openapi.TYPE_STRING),
             'passwordHash': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+        example={
+            'firstName': 'Ana',
+            'lastName': 'Lopez',
+            'email': 'ana@example.com',
+            'phone': '+52-555-111-2222',
+            'role': 'radiologist',
+            'passwordHash': 'plain-or-hashed-password',
         },
     ),
 )
@@ -122,11 +131,27 @@ def docs_doctor_detail(request, doctor_id):
     return Response(status=200)
 
 
-@swagger_auto_schema(method='get', tags=['Patients'], operation_description='List patients')
+@swagger_auto_schema(
+    method='get',
+    tags=['Doctors'],
+    manual_parameters=[doctor_id_param],
+    operation_description='List patients assigned to a doctor by id',
+)
+@api_view(['GET'])
+def docs_doctor_patients(request, doctor_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='get',
+    tags=['Patients'],
+    manual_parameters=[doctor_id_query_param],
+    operation_description='List patients (optional filter by doctorId)',
+)
 @swagger_auto_schema(
     method='post',
     tags=['Patients'],
-    operation_description='Create patient',
+    operation_description='Create patient. Required: firstName, lastName. Optional: email, phone, birthDate, gender, address, postalCode, state, doctorId.',
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=['firstName', 'lastName'],
@@ -140,6 +165,19 @@ def docs_doctor_detail(request, doctor_id):
             'address': openapi.Schema(type=openapi.TYPE_STRING),
             'postalCode': openapi.Schema(type=openapi.TYPE_STRING),
             'state': openapi.Schema(type=openapi.TYPE_STRING),
+            'doctorId': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+        example={
+            'firstName': 'Carlos',
+            'lastName': 'Mendez',
+            'email': 'carlos@example.com',
+            'phone': '+52-555-333-4444',
+            'birthDate': '1988-10-21',
+            'gender': 'male',
+            'address': 'Av. Reforma 123',
+            'postalCode': '06600',
+            'state': 'CDMX',
+            'doctorId': '67f1572f901f73d6f8b0c111',
         },
     ),
 )
@@ -160,7 +198,7 @@ def docs_patient_detail(request, patient_id):
 @swagger_auto_schema(
     method='post',
     tags=['Studies'],
-    operation_description='Create study in DB',
+    operation_description='Create study in DB. Required: orthancStudyId, patientId. Optional: referringDoctorId, interpretingDoctorId, modality, bodyPart, studyDate, status.',
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=['orthancStudyId', 'patientId'],
@@ -173,6 +211,16 @@ def docs_patient_detail(request, patient_id):
             'bodyPart': openapi.Schema(type=openapi.TYPE_STRING),
             'studyDate': openapi.Schema(type=openapi.TYPE_STRING, format='date-time'),
             'status': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+        example={
+            'orthancStudyId': '1.2.840.113619.2.55.3.604688435.123.1711030511.467',
+            'patientId': '67f1572f901f73d6f8b0c222',
+            'referringDoctorId': '67f1572f901f73d6f8b0c111',
+            'interpretingDoctorId': '67f1572f901f73d6f8b0c333',
+            'modality': 'CT',
+            'bodyPart': 'Chest',
+            'studyDate': '2026-04-06T19:30:00Z',
+            'status': 'pending',
         },
     ),
 )
@@ -209,7 +257,7 @@ def docs_study_upload(request):
 @swagger_auto_schema(
     method='post',
     tags=['Reports'],
-    operation_description='Create report',
+    operation_description='Create report. Required: studyId. Optional: doctorId, studyName, technique, studyDate, indication, findings, priorStudies, conclusions, suggestions, status.',
     request_body=openapi.Schema(
         type=openapi.TYPE_OBJECT,
         required=['studyId'],
@@ -225,6 +273,19 @@ def docs_study_upload(request):
             'conclusions': openapi.Schema(type=openapi.TYPE_STRING),
             'suggestions': openapi.Schema(type=openapi.TYPE_STRING),
             'status': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+        example={
+            'studyId': '67f1572f901f73d6f8b0c444',
+            'doctorId': '67f1572f901f73d6f8b0c333',
+            'studyName': 'CT Chest with contrast',
+            'technique': 'Axial 1mm, coronal and sagittal reconstructions',
+            'studyDate': '2026-04-06',
+            'indication': 'Persistent cough',
+            'findings': 'No acute pulmonary process.',
+            'priorStudies': 'Comparison with CT from 2025-12-10.',
+            'conclusions': 'No acute findings.',
+            'suggestions': 'Clinical follow-up.',
+            'status': 'draft',
         },
     ),
 )

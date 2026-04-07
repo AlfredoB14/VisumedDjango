@@ -42,6 +42,13 @@ class Patient(models.Model):
     address = models.CharField(max_length=255, blank=True)
     postalCode = models.CharField(max_length=20, blank=True)
     state = models.CharField(max_length=100, blank=True)
+    doctor = models.ForeignKey(
+        Doctor,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='patients'
+    )
     createdAt = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

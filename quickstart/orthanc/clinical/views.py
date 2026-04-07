@@ -4,6 +4,7 @@ from datetime import date, datetime
 import requests
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, identify_hasher, make_password
+from django.core.exceptions import ValidationError
 from django.http import JsonResponse
 from django.utils.decorators import method_decorator
 from django.views import View
@@ -169,7 +170,17 @@ def doctor_login(request):
 @require_http_methods(['GET', 'POST'])
 def patients_collection(request):
     if request.method == 'GET':
-        patients = Patient.objects.all().order_by('-createdAt')
+        doctor_id = request.GET.get('doctorId')
+        patients = Patient.objects.all()
+
+        if doctor_id:
+            try:
+                doctor = Doctor.objects.get(pk=doctor_id)
+            except (Doctor.DoesNotExist, ValidationError, ValueError):
+                return JsonResponse({'error': 'Doctor not found'}, status=404)
+            patients = patients.filter(doctor=doctor)
+
+        patients = patients.order_by('-createdAt')
         return JsonResponse([PatientSerializer.serialize(item) for item in patients], safe=False)
 
     payload = _parse_json_body(request)
@@ -180,6 +191,13 @@ def patients_collection(request):
     missing = [field for field in required_fields if not payload.get(field)]
     if missing:
         return JsonResponse({'error': f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    doctor = None
+    if payload.get('doctorId'):
+        try:
+            doctor = Doctor.objects.get(pk=payload['doctorId'])
+        except (Doctor.DoesNotExist, ValidationError, ValueError):
+            return JsonResponse({'error': 'Doctor not found'}, status=404)
 
     try:
         patient = Patient.objects.create(
@@ -192,6 +210,7 @@ def patients_collection(request):
             address=payload.get('address', ''),
             postalCode=payload.get('postalCode', ''),
             state=payload.get('state', ''),
+            doctor=doctor,
         )
         return JsonResponse(PatientSerializer.serialize(patient), status=201)
     except Exception as e:
@@ -227,11 +246,32 @@ def patient_detail(request, patient_id):
         except ValueError as e:
             return JsonResponse({'error': str(e)}, status=400)
 
+    if 'doctorId' in payload:
+        if payload['doctorId']:
+            try:
+                patient.doctor = Doctor.objects.get(pk=payload['doctorId'])
+            except (Doctor.DoesNotExist, ValidationError, ValueError):
+                return JsonResponse({'error': 'Doctor not found'}, status=404)
+        else:
+            patient.doctor = None
+
     try:
         patient.save()
         return JsonResponse(PatientSerializer.serialize(patient))
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def doctor_patients(request, doctor_id):
+    try:
+        doctor = Doctor.objects.get(pk=doctor_id)
+    except (Doctor.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Doctor not found'}, status=404)
+
+    patients = Patient.objects.filter(doctor=doctor).order_by('-createdAt')
+    return JsonResponse([PatientSerializer.serialize(item) for item in patients], safe=False)
 
 
 @csrf_exempt

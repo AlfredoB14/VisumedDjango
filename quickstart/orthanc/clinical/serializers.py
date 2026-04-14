@@ -15,7 +15,7 @@ class DoctorSerializer:
 
 class PatientSerializer:
     @staticmethod
-    def serialize(obj):
+    def serialize(obj, last_consultation_at=None):
         return {
             'id': str(obj.pk),
             'doctorId': str(obj.doctor_id) if obj.doctor_id else None,
@@ -28,6 +28,7 @@ class PatientSerializer:
             'address': obj.address,
             'postalCode': obj.postalCode,
             'state': obj.state,
+            'lastConsultationAt': last_consultation_at.isoformat() if last_consultation_at else None,
             'createdAt': obj.createdAt.isoformat() if obj.createdAt else None,
         }
 
@@ -64,6 +65,19 @@ class ReportSerializer:
             'priorStudies': obj.priorStudies,
             'conclusions': obj.conclusions,
             'suggestions': obj.suggestions,
+            'status': obj.status,
+            'createdAt': obj.createdAt.isoformat() if obj.createdAt else None,
+        }
+
+
+class ConsultationSerializer:
+    @staticmethod
+    def serialize(obj):
+        return {
+            'id': str(obj.pk),
+            'patientId': str(obj.patient_id) if obj.patient_id else None,
+            'doctorId': str(obj.doctor_id) if obj.doctor_id else None,
+            'scheduledAt': obj.scheduledAt.isoformat() if obj.scheduledAt else None,
             'status': obj.status,
             'createdAt': obj.createdAt.isoformat() if obj.createdAt else None,
         }

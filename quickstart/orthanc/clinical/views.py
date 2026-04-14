@@ -1,18 +1,19 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 
 import requests
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, identify_hasher, make_password
 from django.core.exceptions import ValidationError
 from django.http import JsonResponse
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
-from .models import Doctor, Patient, Report, Study
-from .serializers import DoctorSerializer, PatientSerializer, ReportSerializer, StudySerializer
+from .models import Consultation, Doctor, Patient, Report, Study
+from .serializers import ConsultationSerializer, DoctorSerializer, PatientSerializer, ReportSerializer, StudySerializer
 
 
 def _parse_json_body(request):
@@ -63,6 +64,17 @@ def _is_valid_password(raw_password, stored_value):
         return check_password(raw_password, stored_value)
     except ValueError:
         return raw_password == stored_value
+
+
+def _last_patient_consultation(patient):
+    return Consultation.objects.filter(patient=patient).order_by('-scheduledAt').first()
+
+
+def _format_local_time(value):
+    if not value:
+        return None
+    localized = timezone.localtime(value)
+    return localized.strftime('%H:%M')
 
 
 @csrf_exempt
@@ -226,7 +238,13 @@ def patient_detail(request, patient_id):
         return JsonResponse({'error': 'Patient not found'}, status=404)
 
     if request.method == 'GET':
-        return JsonResponse(PatientSerializer.serialize(patient))
+        last_consultation = _last_patient_consultation(patient)
+        return JsonResponse(
+            PatientSerializer.serialize(
+                patient,
+                last_consultation_at=last_consultation.scheduledAt if last_consultation else None,
+            )
+        )
 
     if request.method == 'DELETE':
         patient.delete()
@@ -410,6 +428,158 @@ def patient_studies(request, patient_id):
 
     studies = Study.objects.select_related('patient', 'referringDoctor', 'interpretingDoctor').filter(patient=patient).order_by('-createdAt')
     return JsonResponse([StudySerializer.serialize(item) for item in studies], safe=False)
+
+
+@csrf_exempt
+@require_http_methods(['GET', 'POST'])
+def consultations_collection(request):
+    if request.method == 'GET':
+        patient_id = request.GET.get('patientId')
+        doctor_id = request.GET.get('doctorId')
+        status = request.GET.get('status')
+
+        consultations = Consultation.objects.select_related('patient', 'doctor').all()
+
+        if patient_id:
+            consultations = consultations.filter(patient_id=patient_id)
+
+        if doctor_id:
+            consultations = consultations.filter(doctor_id=doctor_id)
+
+        if status:
+            consultations = consultations.filter(status=status)
+
+        consultations = consultations.order_by('-scheduledAt')
+        return JsonResponse([ConsultationSerializer.serialize(item) for item in consultations], safe=False)
+
+    payload = _parse_json_body(request)
+    if payload is None:
+        return JsonResponse({'error': 'Invalid JSON body'}, status=400)
+
+    required_fields = ['patientId', 'doctorId', 'scheduledAt']
+    missing = [field for field in required_fields if not payload.get(field)]
+    if missing:
+        return JsonResponse({'error': f"Missing required fields: {', '.join(missing)}"}, status=400)
+
+    try:
+        patient = Patient.objects.get(pk=payload['patientId'])
+    except (Patient.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Patient not found'}, status=404)
+
+    try:
+        doctor = Doctor.objects.get(pk=payload['doctorId'])
+    except (Doctor.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Doctor not found'}, status=404)
+
+    try:
+        scheduled_at = _parse_datetime(payload.get('scheduledAt'))
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+    status = payload.get('status', Consultation.STATUS_CONFIRMED)
+    valid_status = {choice[0] for choice in Consultation.STATUS_CHOICES}
+    if status not in valid_status:
+        return JsonResponse({'error': f'Invalid status. Allowed values: {", ".join(sorted(valid_status))}'}, status=400)
+
+    try:
+        consultation = Consultation.objects.create(
+            patient=patient,
+            doctor=doctor,
+            scheduledAt=scheduled_at,
+            status=status,
+        )
+        return JsonResponse(ConsultationSerializer.serialize(consultation), status=201)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def patient_consultations(request, patient_id):
+    try:
+        patient = Patient.objects.get(pk=patient_id)
+    except (Patient.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Patient not found'}, status=404)
+
+    consultations = Consultation.objects.select_related('patient', 'doctor').filter(patient=patient).order_by('-scheduledAt')
+    return JsonResponse([ConsultationSerializer.serialize(item) for item in consultations], safe=False)
+
+
+def _update_consultation_status(consultation_id, status):
+    try:
+        consultation = Consultation.objects.get(pk=consultation_id)
+    except (Consultation.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Consultation not found'}, status=404)
+
+    consultation.status = status
+    consultation.save(update_fields=['status'])
+    return JsonResponse(ConsultationSerializer.serialize(consultation))
+
+
+@csrf_exempt
+@require_http_methods(['PUT'])
+def consultation_confirm(request, consultation_id):
+    return _update_consultation_status(consultation_id, Consultation.STATUS_CONFIRMED)
+
+
+@csrf_exempt
+@require_http_methods(['PUT'])
+def consultation_cancel(request, consultation_id):
+    return _update_consultation_status(consultation_id, Consultation.STATUS_CANCELED)
+
+
+@csrf_exempt
+@require_http_methods(['GET'])
+def doctor_agenda(request, doctor_id):
+    try:
+        doctor = Doctor.objects.get(pk=doctor_id)
+    except (Doctor.DoesNotExist, ValidationError, ValueError):
+        return JsonResponse({'error': 'Doctor not found'}, status=404)
+
+    now = timezone.now()
+    local_now = timezone.localtime(now)
+    today = local_now.date()
+    tz = timezone.get_current_timezone()
+    start_of_day = timezone.make_aware(datetime.combine(today, time.min), tz)
+    end_of_day = start_of_day + timedelta(days=1)
+
+    today_consultations = Consultation.objects.select_related('patient').filter(
+        doctor=doctor,
+        status=Consultation.STATUS_CONFIRMED,
+        scheduledAt__gte=start_of_day,
+        scheduledAt__lt=end_of_day,
+    ).order_by('scheduledAt')
+
+    total_consultations_today = Consultation.objects.filter(
+        doctor=doctor,
+        scheduledAt__gte=start_of_day,
+        scheduledAt__lt=end_of_day,
+    ).count()
+
+    next_consultation = Consultation.objects.filter(
+        doctor=doctor,
+        status=Consultation.STATUS_CONFIRMED,
+        scheduledAt__gte=now,
+    ).order_by('scheduledAt').first()
+
+    consultations = [
+        {
+            'scheduledAt': item.scheduledAt.isoformat() if item.scheduledAt else None,
+            'time': _format_local_time(item.scheduledAt),
+            'patientName': f'{item.patient.firstName} {item.patient.lastName}'.strip(),
+        }
+        for item in today_consultations
+    ]
+
+    return JsonResponse(
+        {
+            'doctorId': str(doctor.pk),
+            'totalConsultationsToday': total_consultations_today,
+            'consultationsToday': today_consultations.count(),
+            'nextConsultationTime': _format_local_time(next_consultation.scheduledAt) if next_consultation else None,
+            'consultations': consultations,
+        }
+    )
 
 
 @csrf_exempt

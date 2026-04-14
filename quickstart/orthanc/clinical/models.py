@@ -91,6 +91,24 @@ class Study(models.Model):
         return f"Study {self.orthancStudyId} - {self.patient}"
 
 
+class Consultation(models.Model):
+    STATUS_CONFIRMED = 'confirmed'
+    STATUS_CANCELED = 'canceled'
+    STATUS_CHOICES = [
+        (STATUS_CONFIRMED, 'Confirmed'),
+        (STATUS_CANCELED, 'Canceled'),
+    ]
+
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='consultations')
+    doctor = models.ForeignKey(Doctor, on_delete=models.SET_NULL, null=True, blank=True, related_name='consultations')
+    scheduledAt = models.DateTimeField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_CONFIRMED)
+    createdAt = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Consultation {self.pk} - {self.patient}"
+
+
 class Report(models.Model):
     STATUS_DRAFT = 'draft'
     STATUS_SIGNED = 'signed'

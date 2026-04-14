@@ -8,8 +8,10 @@ patient_id_param = openapi.Parameter('patient_id', openapi.IN_PATH, description=
 patient_id_query_param = openapi.Parameter('patientId', openapi.IN_QUERY, description='Filter studies by Patient ObjectId', type=openapi.TYPE_STRING, required=False)
 doctor_id_param = openapi.Parameter('doctor_id', openapi.IN_PATH, description='Doctor ObjectId', type=openapi.TYPE_STRING)
 doctor_id_query_param = openapi.Parameter('doctorId', openapi.IN_QUERY, description='Filter patients by Doctor ObjectId', type=openapi.TYPE_STRING, required=False)
+status_query_param = openapi.Parameter('status', openapi.IN_QUERY, description='Filter consultations by status (confirmed or canceled)', type=openapi.TYPE_STRING, required=False)
 study_id_param = openapi.Parameter('study_id', openapi.IN_PATH, description='Study ObjectId or Orthanc study id depending on endpoint', type=openapi.TYPE_STRING)
 report_id_param = openapi.Parameter('report_id', openapi.IN_PATH, description='Report ObjectId', type=openapi.TYPE_STRING)
+consultation_id_param = openapi.Parameter('consultation_id', openapi.IN_PATH, description='Consultation ObjectId', type=openapi.TYPE_STRING)
 instance_id_param = openapi.Parameter('instance_id', openapi.IN_PATH, description='Orthanc instance id', type=openapi.TYPE_STRING)
 orthanc_study_id_param = openapi.Parameter('orthanc_study_id', openapi.IN_PATH, description='Orthanc study id', type=openapi.TYPE_STRING)
 upload_dicom_file_param = openapi.Parameter('dicom_file', openapi.IN_FORM, description='.dcm file', type=openapi.TYPE_FILE, required=True)
@@ -145,6 +147,17 @@ def docs_doctor_patients(request, doctor_id):
 
 @swagger_auto_schema(
     method='get',
+    tags=['Doctors'],
+    manual_parameters=[doctor_id_param],
+    operation_description='Get doctor agenda for today: total consultations today, confirmed consultations today, next consultation time and list of today confirmed consultations.',
+)
+@api_view(['GET'])
+def docs_doctor_agenda(request, doctor_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='get',
     tags=['Patients'],
     manual_parameters=[doctor_id_query_param],
     operation_description='List patients (optional filter by doctorId)',
@@ -192,6 +205,71 @@ def docs_patients_collection(request):
 @swagger_auto_schema(method='delete', tags=['Patients'], manual_parameters=[patient_id_param], operation_description='Delete patient by id')
 @api_view(['GET', 'PUT', 'DELETE'])
 def docs_patient_detail(request, patient_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='get',
+    tags=['Consultations'],
+    manual_parameters=[patient_id_param],
+    operation_description='List consultations for a specific patient by id.',
+)
+@api_view(['GET'])
+def docs_patient_consultations(request, patient_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='get',
+    tags=['Consultations'],
+    manual_parameters=[patient_id_query_param, doctor_id_query_param, status_query_param],
+    operation_description='List consultations. Optional filters: patientId, doctorId, status.',
+)
+@swagger_auto_schema(
+    method='post',
+    tags=['Consultations'],
+    operation_description='Create consultation. Required: patientId, doctorId, scheduledAt. Optional: status (confirmed or canceled).',
+    request_body=openapi.Schema(
+        type=openapi.TYPE_OBJECT,
+        required=['patientId', 'doctorId', 'scheduledAt'],
+        properties={
+            'patientId': openapi.Schema(type=openapi.TYPE_STRING),
+            'doctorId': openapi.Schema(type=openapi.TYPE_STRING),
+            'scheduledAt': openapi.Schema(type=openapi.TYPE_STRING, format='date-time'),
+            'status': openapi.Schema(type=openapi.TYPE_STRING),
+        },
+        example={
+            'patientId': '67f1572f901f73d6f8b0c222',
+            'doctorId': '67f1572f901f73d6f8b0c111',
+            'scheduledAt': '2026-04-13T15:30:00Z',
+            'status': 'confirmed',
+        },
+    ),
+)
+@api_view(['GET', 'POST'])
+def docs_consultations_collection(request):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='put',
+    tags=['Consultations'],
+    manual_parameters=[consultation_id_param],
+    operation_description='Confirm a consultation by id.',
+)
+@api_view(['PUT'])
+def docs_consultation_confirm(request, consultation_id):
+    return Response(status=200)
+
+
+@swagger_auto_schema(
+    method='put',
+    tags=['Consultations'],
+    manual_parameters=[consultation_id_param],
+    operation_description='Cancel a consultation by id.',
+)
+@api_view(['PUT'])
+def docs_consultation_cancel(request, consultation_id):
     return Response(status=200)
 
 

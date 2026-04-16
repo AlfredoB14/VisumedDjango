@@ -52,8 +52,8 @@ class StudySerializer:
 
 class ReportSerializer:
     @staticmethod
-    def serialize(obj):
-        return {
+    def serialize(obj, include_relations=False):
+        data = {
             'id': str(obj.pk),
             'studyId': str(obj.study_id) if obj.study_id else None,
             'doctorId': str(obj.doctor_id) if obj.doctor_id else None,
@@ -66,8 +66,25 @@ class ReportSerializer:
             'conclusions': obj.conclusions,
             'suggestions': obj.suggestions,
             'status': obj.status,
+            'shareToken': obj.shareToken,
             'createdAt': obj.createdAt.isoformat() if obj.createdAt else None,
         }
+        if include_relations:
+            if obj.doctor_id and hasattr(obj, 'doctor') and obj.doctor:
+                data['doctorName'] = f"{obj.doctor.firstName} {obj.doctor.lastName}"
+                data['doctorRole'] = obj.doctor.role
+            else:
+                data['doctorName'] = None
+                data['doctorRole'] = None
+            if obj.study_id and hasattr(obj, 'study') and obj.study:
+                data['orthancStudyId'] = obj.study.orthancStudyId
+                data['studyModality'] = obj.study.modality
+                data['studyBodyPart'] = obj.study.bodyPart
+            else:
+                data['orthancStudyId'] = None
+                data['studyModality'] = None
+                data['studyBodyPart'] = None
+        return data
 
 
 class ConsultationSerializer:

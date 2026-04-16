@@ -1,3 +1,5 @@
+import uuid
+
 from django.db import models
 
 
@@ -130,7 +132,13 @@ class Report(models.Model):
     conclusions = models.TextField(blank=True)
     suggestions = models.TextField(blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    shareToken = models.CharField(max_length=64, null=True, blank=True)
     createdAt = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self.shareToken:
+            self.shareToken = uuid.uuid4().hex
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Report #{self.pk} - {self.status}"

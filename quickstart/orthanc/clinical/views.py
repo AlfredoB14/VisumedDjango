@@ -5,7 +5,7 @@ import requests
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, identify_hasher, make_password
 from django.core.exceptions import ValidationError
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
@@ -183,6 +183,9 @@ def doctor_login(request):
 def patients_collection(request):
     if request.method == 'GET':
         doctor_id = request.GET.get('doctorId')
+        email = request.GET.get('email')
+        phone = request.GET.get('phone')
+        search = request.GET.get('search')
         patients = Patient.objects.all()
 
         if doctor_id:
@@ -191,6 +194,21 @@ def patients_collection(request):
             except (Doctor.DoesNotExist, ValidationError, ValueError):
                 return JsonResponse({'error': 'Doctor not found'}, status=404)
             patients = patients.filter(doctor=doctor)
+
+        if email:
+            patients = patients.filter(email=email)
+
+        if phone:
+            patients = patients.filter(phone=phone)
+
+        if search:
+            # Filter by name or email (case-insensitive contains)
+            from django.db.models import Q
+            patients = patients.filter(
+                Q(firstName__icontains=search) |
+                Q(lastName__icontains=search) |
+                Q(email__icontains=search)
+            )
 
         patients = patients.order_by('-createdAt')
         return JsonResponse([PatientSerializer.serialize(item) for item in patients], safe=False)
@@ -583,10 +601,30 @@ def doctor_agenda(request, doctor_id):
 
 
 @csrf_exempt
+@require_http_methods(['GET'])
+def report_by_token(request, token):
+    try:
+        report = Report.objects.select_related('study', 'doctor').get(shareToken=token)
+    except Report.DoesNotExist:
+        return JsonResponse({'error': 'Report not found'}, status=404)
+    return JsonResponse(ReportSerializer.serialize(report, include_relations=True))
+
+
+@csrf_exempt
 @require_http_methods(['GET', 'POST'])
 def reports_collection(request):
     if request.method == 'GET':
-        reports = Report.objects.select_related('study', 'doctor').all().order_by('-createdAt')
+        study_id = request.GET.get('studyId')
+        reports = Report.objects.select_related('study', 'doctor').all()
+
+        if study_id:
+            try:
+                study = Study.objects.get(pk=study_id)
+                reports = reports.filter(study=study)
+            except (Study.DoesNotExist, ValidationError, ValueError):
+                return JsonResponse([], safe=False)
+
+        reports = reports.order_by('-createdAt')
         return JsonResponse([ReportSerializer.serialize(item) for item in reports], safe=False)
 
     payload = _parse_json_body(request)
@@ -611,6 +649,7 @@ def reports_collection(request):
             return JsonResponse({'error': 'Doctor not found'}, status=404)
 
     try:
+        report_status = payload.get('status', Report.STATUS_DRAFT)
         report = Report.objects.create(
             study=study,
             doctor=doctor,
@@ -622,8 +661,12 @@ def reports_collection(request):
             priorStudies=payload.get('priorStudies', ''),
             conclusions=payload.get('conclusions', ''),
             suggestions=payload.get('suggestions', ''),
-            status=payload.get('status', Report.STATUS_DRAFT),
+            status=report_status,
         )
+        # Auto-promote study status when report is signed or completed
+        if report_status in ('signed', 'completed'):
+            study.status = report_status
+            study.save(update_fields=['status'])
         return JsonResponse(ReportSerializer.serialize(report), status=201)
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
@@ -675,6 +718,11 @@ def report_detail(request, report_id):
 
     try:
         report.save()
+        # Auto-promote study status when report is signed or completed
+        if payload.get('status') in ('signed', 'completed'):
+            study = report.study
+            study.status = payload['status']
+            study.save(update_fields=['status'])
         return JsonResponse(ReportSerializer.serialize(report))
     except Exception as e:
         return JsonResponse({'error': str(e)}, status=400)
@@ -741,3 +789,91 @@ class StudyUploadView(View):
         )
 
         return JsonResponse(StudySerializer.serialize(study), status=201)
+
+
+# ─── Orthanc proxy ────────────────────────────────────────────────────────────
+
+def _orthanc(path):
+    """Make an authenticated GET request to Orthanc."""
+    return requests.get(
+        f"{settings.ORTHANC_URL}{path}",
+        auth=(settings.ORTHANC_USER, settings.ORTHANC_PASS),
+        timeout=15,
+    )
+
+
+@require_http_methods(['GET'])
+def orthanc_studies_list(request):
+    """Returns all studies available in Orthanc with their modality and description."""
+    resp = _orthanc('/studies?expand')
+    if resp.status_code != 200:
+        return JsonResponse({'error': 'Orthanc unreachable'}, status=503)
+
+    result = []
+    for s in resp.json():
+        tags = s.get('MainDicomTags', {})
+        pt = s.get('PatientMainDicomTags', {})
+        # Get modality from first series if not in study tags
+        modality = tags.get('Modality', '')
+        if not modality:
+            series_ids = s.get('Series', [])
+            if series_ids:
+                sr = _orthanc(f'/series/{series_ids[0]}')
+                if sr.status_code == 200:
+                    modality = sr.json().get('MainDicomTags', {}).get('Modality', '')
+        result.append({
+            'orthancId': s['ID'],
+            'modality': modality,
+            'description': tags.get('StudyDescription') or tags.get('ProtocolName') or '',
+            'date': tags.get('StudyDate', ''),
+            'patientName': pt.get('PatientName', ''),
+            'seriesCount': len(s.get('Series', [])),
+        })
+
+    return JsonResponse(result, safe=False)
+
+
+@require_http_methods(['GET'])
+def orthanc_study_instances(request, orthanc_study_id):
+    """
+    Returns ordered list of instance preview URLs for an Orthanc study.
+    Each entry: { instanceId, imageUrl }
+    imageUrl points to the orthanc_instance_preview endpoint (no auth needed from browser).
+    """
+    series_resp = _orthanc(f"/studies/{orthanc_study_id}/series")
+    if series_resp.status_code != 200:
+        return JsonResponse({'error': 'Study not found in Orthanc'}, status=404)
+
+    images = []
+    for series in series_resp.json():
+        series_id = series.get('ID')
+        if not series_id:
+            continue
+        series_detail = _orthanc(f"/series/{series_id}")
+        if series_detail.status_code != 200:
+            continue
+        series_data = series_detail.json()
+        series_desc = (
+            series_data.get('MainDicomTags', {}).get('SeriesDescription', '')
+            or series_data.get('MainDicomTags', {}).get('ProtocolName', '')
+            or ''
+        )
+        for instance_id in series_data.get('Instances', []):
+            images.append({
+                'instanceId': instance_id,
+                'imageUrl': f"/api/orthanc-proxy/instances/{instance_id}/preview/",
+                'seriesDescription': series_desc,
+            })
+
+    return JsonResponse({'images': images})
+
+
+def orthanc_instance_preview(request, instance_id):
+    """Proxies a single DICOM instance preview JPEG from Orthanc."""
+    resp = _orthanc(f"/instances/{instance_id}/preview")
+    if resp.status_code != 200:
+        return HttpResponse(status=resp.status_code)
+    return HttpResponse(
+        content=resp.content,
+        content_type=resp.headers.get('Content-Type', 'image/jpeg'),
+    )

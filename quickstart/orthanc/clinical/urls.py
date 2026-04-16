@@ -18,5 +18,10 @@ urlpatterns = [
     path('studies-db/', views.studies_collection, name='studies_collection'),
     path('studies-db/<str:study_id>/', views.study_detail, name='study_detail'),
     path('reports/', views.reports_collection, name='reports_collection'),
+    path('reports/by-token/<str:token>/', views.report_by_token, name='report_by_token'),
     path('reports/<str:report_id>/', views.report_detail, name='report_detail'),
+    # Orthanc proxy (no browser auth needed)
+    path('orthanc-proxy/studies/', views.orthanc_studies_list, name='orthanc_studies_list'),
+    path('orthanc-proxy/studies/<str:orthanc_study_id>/instances/', views.orthanc_study_instances, name='orthanc_study_instances'),
+    path('orthanc-proxy/instances/<str:instance_id>/preview/', views.orthanc_instance_preview, name='orthanc_instance_preview'),
 ]

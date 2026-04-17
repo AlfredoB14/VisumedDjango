@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import date, datetime, time, timedelta
 
 import requests
@@ -14,6 +15,9 @@ from django.views.decorators.http import require_http_methods
 
 from .models import Consultation, Doctor, Patient, Report, Study
 from .serializers import ConsultationSerializer, DoctorSerializer, PatientSerializer, ReportSerializer, StudySerializer
+
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_json_body(request):
@@ -150,12 +154,26 @@ def doctor_login(request):
     email = payload.get('email')
     password = payload.get('password')
 
+    # Backward-compatible aliases used by some frontend flows.
+    if not email:
+        email = payload.get('username')
+    if not password:
+        password = payload.get('passwordHash')
+
+    if isinstance(email, str):
+        email = email.strip()
+
     if not email or not password:
         return JsonResponse({'error': 'email and password are required'}, status=400)
 
     try:
-        doctor = Doctor.objects.get(email=email)
-    except Doctor.DoesNotExist:
+        # filter().first() avoids raising MultipleObjectsReturned in case of legacy duplicates.
+        doctor = Doctor.objects.filter(email__iexact=email).order_by('-createdAt').first()
+    except Exception:
+        logger.exception('Doctor login failed while querying by email')
+        return JsonResponse({'error': 'Login temporarily unavailable'}, status=503)
+
+    if doctor is None:
         return JsonResponse({'error': 'Invalid credentials'}, status=401)
 
     if not _is_valid_password(password, doctor.passwordHash):

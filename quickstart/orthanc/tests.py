@@ -256,3 +256,56 @@ class ConsultationsEndpointsTests(TestCase):
 		self.assertEqual(data['nextConsultationTime'], timezone.localtime(next_confirmed).strftime('%H:%M'))
 		self.assertEqual(len(data['consultations']), 3)
 		self.assertEqual(data['consultations'][0]['patientName'], f'{self.patient_1.firstName} {self.patient_1.lastName}')
+
+
+class DoctorLoginEndpointTests(TestCase):
+	def setUp(self):
+		self.doctor = Doctor.objects.create(
+			firstName='Mario',
+			lastName='Ramos',
+			email='mario@example.com',
+			phone='555-444',
+			role=Doctor.ROLE_RADIOLOGIST,
+			passwordHash='super-secret',
+		)
+
+	def test_doctor_login_success(self):
+		response = self.client.post(
+			'/api/doctors/login/',
+			data=json.dumps({'email': 'mario@example.com', 'password': 'super-secret'}),
+			content_type='application/json',
+		)
+
+		self.assertEqual(response.status_code, 200)
+		data = response.json()
+		self.assertEqual(data['message'], 'Login successful')
+		self.assertEqual(data['doctor']['email'], 'mario@example.com')
+
+	def test_doctor_login_accepts_password_hash_alias(self):
+		response = self.client.post(
+			'/api/doctors/login/',
+			data=json.dumps({'email': 'mario@example.com', 'passwordHash': 'super-secret'}),
+			content_type='application/json',
+		)
+
+		self.assertEqual(response.status_code, 200)
+
+	def test_doctor_login_invalid_credentials(self):
+		response = self.client.post(
+			'/api/doctors/login/',
+			data=json.dumps({'email': 'mario@example.com', 'password': 'wrong-password'}),
+			content_type='application/json',
+		)
+
+		self.assertEqual(response.status_code, 401)
+		self.assertEqual(response.json()['error'], 'Invalid credentials')
+
+	def test_doctor_login_requires_email_and_password(self):
+		response = self.client.post(
+			'/api/doctors/login/',
+			data=json.dumps({'email': 'mario@example.com'}),
+			content_type='application/json',
+		)
+
+		self.assertEqual(response.status_code, 400)
+		self.assertEqual(response.json()['error'], 'email and password are required')

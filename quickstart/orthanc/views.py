@@ -79,7 +79,7 @@ def _max_workers():
 
 
 def _study_cache_key(orthanc_study_id):
-    return f"orthanc:study-image-index:v3:{orthanc_study_id}"
+    return f"orthanc:study-image-index:v4:{orthanc_study_id}"
 
 
 def classify_plane(orientation):
@@ -161,6 +161,18 @@ def parse_instance_number(value):
             return int(float(str(value)))
         except (ValueError, TypeError):
             return None
+
+
+def parse_series_number(value):
+    if value in (None, ''):
+        return 0
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        try:
+            return int(float(str(value)))
+        except (ValueError, TypeError):
+            return 0
 
 
 def compute_slice_position(orientation, position):
@@ -283,6 +295,30 @@ def fetch_series_tags(series_id, auth, base):
         return series_id, None
 
 
+def fetch_series_number(series_id, auth, base, cache_dict):
+    if series_id in cache_dict:
+        return cache_dict[series_id]
+
+    try:
+        response = requests.get(f"{base}/series/{series_id}", auth=auth, timeout=15)
+        if response.status_code != 200:
+            cache_dict[series_id] = 0
+            return 0
+
+        series_data = response.json()
+    except Exception:
+        cache_dict[series_id] = 0
+        return 0
+
+    tags = series_data.get('MainDicomTags', {})
+    if not isinstance(tags, dict):
+        tags = {}
+
+    series_number = parse_series_number(tags.get('SeriesNumber'))
+    cache_dict[series_id] = series_number
+    return series_number
+
+
 def _build_instance_record(instance_id, series_id, tags, base):
     orientation = parse_orientation(tags.get('ImageOrientationPatient'))
     if orientation is None:
@@ -394,6 +430,7 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
     classified_count = 0
     instance_pixel_spacing_cache = {}
     series_pixel_spacing_cache = {}
+    series_number_cache = {}
     instances_url = f"{base}/studies/{orthanc_study_id}/instances"
     try:
         instances_response = requests.get(instances_url, auth=auth, timeout=30)
@@ -416,6 +453,9 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
                 known_series_ids.add(series_id)
                 series_ids.append(series_id)
                 _append_missing_series(series_results, series_id)
+
+            if series_id not in series_number_cache:
+                series_number_cache[series_id] = parse_series_number(tags.get('SeriesNumber'))
 
             record = _build_instance_record(instance_id, series_id, tags, base)
             if not record:
@@ -489,11 +529,18 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
                     plane = record.pop('plane')
                     series_results[plane][series_id].append(record)
 
+    series_order = []
+    for series_id in series_ids:
+        number = fetch_series_number(series_id, auth, base, series_number_cache)
+        series_order.append((number, series_id))
+    series_order.sort(key=lambda item: (item[0], item[1]))
+    sorted_series_ids = [series_id for _, series_id in series_order]
+
     planes = {}
     total_instances = 0
     for plane in PLANES:
         instances = []
-        for series_id in series_ids:
+        for series_id in sorted_series_ids:
             series_instances = series_results[plane].get(series_id, [])
             if not series_instances:
                 continue
@@ -513,7 +560,7 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
 
     return {
         'orthancStudyId': orthanc_study_id,
-        'seriesCount': len(series_ids),
+        'seriesCount': len(sorted_series_ids),
         'total': total_instances,
         'pixelSpacing': general_pixel_spacing,
         'planes': planes,

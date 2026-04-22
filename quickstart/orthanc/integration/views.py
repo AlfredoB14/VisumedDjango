@@ -1,4 +1,5 @@
 import requests
+import numpy as np
 from collections import Counter
 from django.conf import settings
 from django.http import JsonResponse, StreamingHttpResponse
@@ -20,6 +21,52 @@ def _orthanc_auth():
     password = getattr(settings, 'ORTHANC_PASS', None)
     if user and password:
         return (user, password)
+    return None
+
+
+def _is_truthy(value):
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def parse_orientation(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.split('\\')
+    elif isinstance(value, list):
+        parts = value
+    else:
+        return None
+
+    if len(parts) != 6:
+        return None
+
+    try:
+        return [float(v) for v in parts]
+    except (TypeError, ValueError):
+        return None
+
+
+def classify_plane(orientation):
+    if orientation is None:
+        return None
+
+    try:
+        row_vec = np.array(orientation[:3])
+        col_vec = np.array(orientation[3:])
+        normal = np.cross(row_vec, col_vec)
+        abs_normal = np.abs(normal)
+        dominant_axis = np.argmax(abs_normal)
+
+        if dominant_axis == 2:
+            return 'axial'
+        if dominant_axis == 0:
+            return 'sagittal'
+        if dominant_axis == 1:
+            return 'coronal'
+    except Exception:
+        return None
+
     return None
 
 
@@ -151,6 +198,38 @@ def _resolve_general_pixel_spacing(sorted_instances, series_pixel_spacing_cache)
     return None
 
 
+def _select_primary_series_by_plane(instances):
+    plane_series_stats = {}
+
+    for item in instances:
+        plane = item.get('plane')
+        series_id = item.get('series_id')
+        if not plane or not series_id:
+            continue
+
+        stats = plane_series_stats.setdefault(
+            plane,
+            {},
+        ).setdefault(
+            series_id,
+            {
+                'count': 0,
+                'series_number': item.get('series_number', 0),
+            },
+        )
+        stats['count'] += 1
+
+    selected_by_plane = {}
+    for plane, series_map in plane_series_stats.items():
+        best_series_id, _ = min(
+            series_map.items(),
+            key=lambda kv: (-kv[1]['count'], kv[1]['series_number'], kv[0]),
+        )
+        selected_by_plane[plane] = best_series_id
+
+    return selected_by_plane
+
+
 def _stream_content(response, chunk_size=65536):
     try:
         for chunk in response.iter_content(chunk_size=chunk_size):
@@ -189,6 +268,7 @@ def get_study_images(request, study_id):
             quality = int(quality)
         except (ValueError, TypeError):
             quality = 25
+        primary_only = _is_truthy(request.GET.get('primaryOnly'))
 
         response = orthanc_request(f"/studies/{study_id}/instances")
         if not response:
@@ -215,6 +295,8 @@ def get_study_images(request, study_id):
             if not instance_id or not series_id:
                 continue
 
+            plane = classify_plane(parse_orientation(tags.get('ImageOrientationPatient')))
+
             if series_id not in series_numbers:
                 # Prioriza el valor de serie en /series/{id}, que es mas confiable
                 # que MainDicomTags a nivel instancia para ordenamiento global.
@@ -229,6 +311,7 @@ def get_study_images(request, study_id):
                 "series_id": series_id,
                 "series_number": series_numbers.get(series_id, 0),
                 "instance_number": _safe_int(tags.get('InstanceNumber'), 0),
+                "plane": plane,
             }
             instances_with_numbers.append(instance_info)
 
@@ -241,6 +324,21 @@ def get_study_images(request, study_id):
                 x["id"],
             ),
         )
+
+        selected_series_by_plane = {}
+        selected_series_number_by_plane = {}
+        if primary_only:
+            selected_by_plane = _select_primary_series_by_plane(sorted_instances)
+            if selected_by_plane:
+                sorted_instances = [
+                    item for item in sorted_instances
+                    if item.get('plane') and selected_by_plane.get(item.get('plane')) == item.get('series_id')
+                ]
+                selected_series_by_plane = selected_by_plane
+                selected_series_number_by_plane = {
+                    plane: series_numbers.get(series_id, 0)
+                    for plane, series_id in selected_by_plane.items()
+                }
 
         general_pixel_spacing = _resolve_general_pixel_spacing(
             sorted_instances,
@@ -259,14 +357,18 @@ def get_study_images(request, study_id):
 
             image_urls.append(image_info)
 
-        return JsonResponse(
-            {
-                "studyId": study_id,
-                "imageCount": len(image_urls),
-                "pixelSpacing": list(general_pixel_spacing) if general_pixel_spacing else None,
-                "images": image_urls,
-            }
-        )
+        payload = {
+            "studyId": study_id,
+            "imageCount": len(image_urls),
+            "pixelSpacing": list(general_pixel_spacing) if general_pixel_spacing else None,
+            "images": image_urls,
+        }
+        if primary_only:
+            payload["primaryOnly"] = True
+            payload["selectedSeriesByPlane"] = selected_series_by_plane
+            payload["selectedSeriesNumberByPlane"] = selected_series_number_by_plane
+
+        return JsonResponse(payload)
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)

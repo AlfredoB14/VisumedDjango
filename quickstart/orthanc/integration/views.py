@@ -83,6 +83,21 @@ def _get_series_pixel_spacing(series_id):
     return _extract_pixel_spacing_from_tags(tags)
 
 
+def _get_series_number(series_id):
+    response = orthanc_request(f"/series/{series_id}")
+    if not response:
+        return 0
+    try:
+        series_data = response.json()
+    except ValueError:
+        return 0
+
+    tags = series_data.get('MainDicomTags', {})
+    if not isinstance(tags, dict):
+        tags = {}
+    return _safe_int(tags.get('SeriesNumber'), 0)
+
+
 def _normalize_pixel_spacing(spacing, decimals=6):
     if not spacing or len(spacing) != 2:
         return None
@@ -201,7 +216,9 @@ def get_study_images(request, study_id):
                 continue
 
             if series_id not in series_numbers:
-                series_numbers[series_id] = _safe_int(tags.get('SeriesNumber'), 0)
+                # Prioriza el valor de serie en /series/{id}, que es mas confiable
+                # que MainDicomTags a nivel instancia para ordenamiento global.
+                series_numbers[series_id] = _get_series_number(series_id)
 
             pixel_spacing = _extract_pixel_spacing_from_tags(tags)
             if pixel_spacing is not None and series_id not in series_pixel_spacing_cache:
@@ -217,7 +234,12 @@ def get_study_images(request, study_id):
 
         sorted_instances = sorted(
             instances_with_numbers,
-            key=lambda x: (x["series_number"], x["instance_number"]),
+            key=lambda x: (
+                x["series_number"],
+                x["series_id"],
+                x["instance_number"],
+                x["id"],
+            ),
         )
 
         general_pixel_spacing = _resolve_general_pixel_spacing(

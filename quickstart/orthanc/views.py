@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 
 import numpy as np
 import requests
@@ -78,7 +79,7 @@ def _max_workers():
 
 
 def _study_cache_key(orthanc_study_id):
-    return f"orthanc:study-image-index:v1:{orthanc_study_id}"
+    return f"orthanc:study-image-index:v3:{orthanc_study_id}"
 
 
 def classify_plane(orientation):
@@ -177,6 +178,78 @@ def compute_slice_position(orientation, position):
         return None
 
 
+def parse_pixel_spacing(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.split('\\')
+    elif isinstance(value, list):
+        parts = value
+    else:
+        return None
+
+    if len(parts) != 2:
+        return None
+
+    try:
+        return [float(parts[0]), float(parts[1])]
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_pixel_spacing_from_tags(tags):
+    if not isinstance(tags, dict):
+        return None
+    return (
+        parse_pixel_spacing(tags.get('PixelSpacing'))
+        or parse_pixel_spacing(tags.get('ImagerPixelSpacing'))
+    )
+
+
+def fetch_instance_pixel_spacing(instance_id, auth, base, cache_dict):
+    if instance_id in cache_dict:
+        return cache_dict[instance_id]
+
+    try:
+        response = requests.get(
+            f"{base}/instances/{instance_id}/simplified-tags",
+            auth=auth,
+            timeout=15,
+        )
+        if response.status_code != 200:
+            cache_dict[instance_id] = None
+            return None
+        tags = response.json()
+    except Exception:
+        cache_dict[instance_id] = None
+        return None
+
+    cache_dict[instance_id] = parse_pixel_spacing_from_tags(tags)
+    return cache_dict[instance_id]
+
+
+def fetch_series_pixel_spacing(series_id, auth, base, cache_dict):
+    if series_id in cache_dict:
+        return cache_dict[series_id]
+
+    try:
+        response = requests.get(
+            f"{base}/series/{series_id}/shared-tags",
+            auth=auth,
+            timeout=15,
+        )
+        if response.status_code != 200:
+            cache_dict[series_id] = None
+            return None
+        tags = response.json()
+    except Exception:
+        cache_dict[series_id] = None
+        return None
+
+    cache_dict[series_id] = parse_pixel_spacing_from_tags(tags)
+    return cache_dict[series_id]
+
+
 def fetch_series_tags(series_id, auth, base):
     """
     Fetch simplified tags for all DICOM instances in a series.
@@ -225,6 +298,7 @@ def _build_instance_record(instance_id, series_id, tags, base):
         'seriesId': series_id,
         'url': f"{base}/instances/{instance_id}/preview",
         'instanceNumber': parse_instance_number(tags.get('InstanceNumber')),
+        'pixelSpacing': parse_pixel_spacing_from_tags(tags),
         '_slicePosition': compute_slice_position(
             orientation,
             parse_position(tags.get('ImagePositionPatient')),
@@ -262,6 +336,29 @@ def _sort_series_instances(series_instances):
         )
 
 
+def _normalize_pixel_spacing(spacing, decimals=6):
+    if not spacing or len(spacing) != 2:
+        return None
+    return (round(float(spacing[0]), decimals), round(float(spacing[1]), decimals))
+
+
+def _compute_general_pixel_spacing_and_compact(planes):
+    normalized_values = []
+
+    for plane_data in planes.values():
+        for instance in plane_data.get('instances', []):
+            normalized = _normalize_pixel_spacing(instance.get('pixelSpacing'))
+            if normalized is not None:
+                normalized_values.append(normalized)
+            instance.pop('pixelSpacing', None)
+
+    if not normalized_values:
+        return None
+
+    most_common_spacing, _ = Counter(normalized_values).most_common(1)[0]
+    return [most_common_spacing[0], most_common_spacing[1]]
+
+
 def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
     study_url = f"{base}/studies/{orthanc_study_id}"
     try:
@@ -295,6 +392,8 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
     }
 
     classified_count = 0
+    instance_pixel_spacing_cache = {}
+    series_pixel_spacing_cache = {}
     instances_url = f"{base}/studies/{orthanc_study_id}/instances"
     try:
         instances_response = requests.get(instances_url, auth=auth, timeout=30)
@@ -322,6 +421,27 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
             if not record:
                 continue
 
+            if record.get('pixelSpacing') is not None:
+                series_pixel_spacing_cache.setdefault(series_id, record.get('pixelSpacing'))
+
+            if record.get('pixelSpacing') is None:
+                record['pixelSpacing'] = fetch_series_pixel_spacing(
+                    series_id,
+                    auth,
+                    base,
+                    series_pixel_spacing_cache,
+                )
+
+            if record.get('pixelSpacing') is None:
+                record['pixelSpacing'] = fetch_instance_pixel_spacing(
+                    instance_id,
+                    auth,
+                    base,
+                    instance_pixel_spacing_cache,
+                )
+                if record.get('pixelSpacing') is not None:
+                    series_pixel_spacing_cache[series_id] = record['pixelSpacing']
+
             plane = record.pop('plane')
             series_results[plane][series_id].append(record)
             classified_count += 1
@@ -344,6 +464,28 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
                     record = _build_instance_record(instance_id, series_id, tags, base)
                     if not record:
                         continue
+
+                    if record.get('pixelSpacing') is not None:
+                        series_pixel_spacing_cache.setdefault(series_id, record.get('pixelSpacing'))
+
+                    if record.get('pixelSpacing') is None:
+                        record['pixelSpacing'] = fetch_series_pixel_spacing(
+                            series_id,
+                            auth,
+                            base,
+                            series_pixel_spacing_cache,
+                        )
+
+                    if record.get('pixelSpacing') is None:
+                        record['pixelSpacing'] = fetch_instance_pixel_spacing(
+                            instance_id,
+                            auth,
+                            base,
+                            instance_pixel_spacing_cache,
+                        )
+                        if record.get('pixelSpacing') is not None:
+                            series_pixel_spacing_cache[series_id] = record['pixelSpacing']
+
                     plane = record.pop('plane')
                     series_results[plane][series_id].append(record)
 
@@ -367,10 +509,13 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
         }
         total_instances += len(instances)
 
+    general_pixel_spacing = _compute_general_pixel_spacing_and_compact(planes)
+
     return {
         'orthancStudyId': orthanc_study_id,
         'seriesCount': len(series_ids),
         'total': total_instances,
+        'pixelSpacing': general_pixel_spacing,
         'planes': planes,
     }, 200
 
@@ -446,12 +591,12 @@ class BaseStudyPlaneView(APIView):
             return Response({'error': 'Orthanc request failed'}, status=502)
 
         plane_data = index_data.get('planes', {}).get(self.plane, {'total': 0, 'instances': []})
-
         return Response(
             {
                 'orthancStudyId': orthanc_study_id,
                 'plane': self.plane,
                 'total': plane_data.get('total', 0),
+                'pixelSpacing': index_data.get('pixelSpacing'),
                 'instances': plane_data.get('instances', []),
                 'cacheHit': cache_hit,
             },

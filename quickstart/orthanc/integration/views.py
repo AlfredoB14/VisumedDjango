@@ -1,4 +1,5 @@
 import requests
+from collections import Counter
 from django.conf import settings
 from django.http import JsonResponse, StreamingHttpResponse
 from django.views.decorators.http import require_GET
@@ -30,6 +31,109 @@ def _safe_int(value, default=0):
             return int(float(str(value)))
         except (TypeError, ValueError):
             return default
+
+
+def _parse_pixel_spacing(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parts = value.split('\\')
+    elif isinstance(value, list):
+        parts = value
+    else:
+        return None
+
+    if len(parts) != 2:
+        return None
+
+    try:
+        return [float(parts[0]), float(parts[1])]
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_pixel_spacing_from_tags(tags):
+    if not isinstance(tags, dict):
+        return None
+    return (
+        _parse_pixel_spacing(tags.get('PixelSpacing'))
+        or _parse_pixel_spacing(tags.get('ImagerPixelSpacing'))
+    )
+
+
+def _get_instance_pixel_spacing(instance_id):
+    response = orthanc_request(f"/instances/{instance_id}/simplified-tags")
+    if not response:
+        return None
+    try:
+        tags = response.json()
+    except ValueError:
+        return None
+    return _extract_pixel_spacing_from_tags(tags)
+
+
+def _get_series_pixel_spacing(series_id):
+    response = orthanc_request(f"/series/{series_id}/shared-tags")
+    if not response:
+        return None
+    try:
+        tags = response.json()
+    except ValueError:
+        return None
+    return _extract_pixel_spacing_from_tags(tags)
+
+
+def _normalize_pixel_spacing(spacing, decimals=6):
+    if not spacing or len(spacing) != 2:
+        return None
+    return (round(float(spacing[0]), decimals), round(float(spacing[1]), decimals))
+
+
+def _compute_general_pixel_spacing(instances):
+    normalized_values = []
+    for item in instances:
+        normalized = _normalize_pixel_spacing(item.get('pixel_spacing'))
+        if normalized is not None:
+            normalized_values.append(normalized)
+
+    if not normalized_values:
+        return None
+
+    most_common_spacing, _ = Counter(normalized_values).most_common(1)[0]
+    return [most_common_spacing[0], most_common_spacing[1]]
+
+
+def _resolve_general_pixel_spacing(sorted_instances, series_pixel_spacing_cache):
+    # 1) Reusa cualquier spacing ya encontrado en MainDicomTags.
+    if series_pixel_spacing_cache:
+        first_series_id = next(iter(series_pixel_spacing_cache))
+        spacing = series_pixel_spacing_cache.get(first_series_id)
+        if spacing is not None:
+            return _normalize_pixel_spacing(spacing)
+
+    # 2) Intenta una sola vez por serie con shared-tags.
+    for item in sorted_instances:
+        series_id = item.get('series_id')
+        if not series_id:
+            continue
+
+        if series_id not in series_pixel_spacing_cache:
+            series_pixel_spacing_cache[series_id] = _get_series_pixel_spacing(series_id)
+
+        spacing = series_pixel_spacing_cache.get(series_id)
+        if spacing is not None:
+            return _normalize_pixel_spacing(spacing)
+
+    # 3) Fallback final: una sola instancia.
+    for item in sorted_instances:
+        instance_id = item.get('id')
+        if not instance_id:
+            continue
+        spacing = _get_instance_pixel_spacing(instance_id)
+        if spacing is not None:
+            return _normalize_pixel_spacing(spacing)
+
+    return None
 
 
 def _stream_content(response, chunk_size=65536):
@@ -80,6 +184,7 @@ def get_study_images(request, study_id):
             return JsonResponse({"error": "Orthanc devolvio un formato inesperado"}, status=502)
 
         series_numbers = {}
+        series_pixel_spacing_cache = {}
 
         instances_with_numbers = []
         for instance in instances:
@@ -98,6 +203,10 @@ def get_study_images(request, study_id):
             if series_id not in series_numbers:
                 series_numbers[series_id] = _safe_int(tags.get('SeriesNumber'), 0)
 
+            pixel_spacing = _extract_pixel_spacing_from_tags(tags)
+            if pixel_spacing is not None and series_id not in series_pixel_spacing_cache:
+                series_pixel_spacing_cache[series_id] = pixel_spacing
+
             instance_info = {
                 "id": instance_id,
                 "series_id": series_id,
@@ -111,22 +220,28 @@ def get_study_images(request, study_id):
             key=lambda x: (x["series_number"], x["instance_number"]),
         )
 
+        general_pixel_spacing = _resolve_general_pixel_spacing(
+            sorted_instances,
+            series_pixel_spacing_cache,
+        )
+
         image_urls = []
         for instance in sorted_instances:
             image_url = f"{ORTHANC_URL}/instances/{instance['id']}/frames/0/rendered?quality={quality}"
-            image_urls.append(
-                {
-                    "instanceId": instance['id'],
-                    "imageUrl": image_url,
-                    "seriesNumber": instance["series_number"],
-                    "instanceNumber": instance["instance_number"],
-                }
-            )
+            image_info = {
+                "instanceId": instance['id'],
+                "imageUrl": image_url,
+                "seriesNumber": instance["series_number"],
+                "instanceNumber": instance["instance_number"],
+            }
+
+            image_urls.append(image_info)
 
         return JsonResponse(
             {
                 "studyId": study_id,
                 "imageCount": len(image_urls),
+                "pixelSpacing": list(general_pixel_spacing) if general_pixel_spacing else None,
                 "images": image_urls,
             }
         )

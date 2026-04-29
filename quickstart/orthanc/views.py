@@ -102,9 +102,9 @@ def classify_plane(orientation):
     if dominant_axis == 2:
         return 'axial'
     elif dominant_axis == 0:
-        return 'sagittal'
-    elif dominant_axis == 1:
         return 'coronal'
+    elif dominant_axis == 1:
+        return 'sagittal'
 
 
 def parse_orientation(value):
@@ -353,7 +353,6 @@ def _sort_series_instances(series_instances):
         item.get('_slicePosition') is not None
         for item in series_instances
     )
-
     if has_slice_position:
         series_instances.sort(
             key=lambda x: (
@@ -370,6 +369,68 @@ def _sort_series_instances(series_instances):
                 x.get('instanceId'),
             )
         )
+
+
+def _select_primary_series_instances(instances):
+    series_stats = {}
+
+    for index, item in enumerate(instances):
+        series_id = item.get('seriesId')
+        if not series_id:
+            continue
+
+        stats = series_stats.setdefault(
+            series_id,
+            {
+                'count': 0,
+                'first_index': index,
+            },
+        )
+        stats['count'] += 1
+        if index < stats['first_index']:
+            stats['first_index'] = index
+
+    if not series_stats:
+        return instances, None
+
+    selected_series_id, _ = min(
+        series_stats.items(),
+        key=lambda kv: (-kv[1]['count'], kv[1]['first_index'], kv[0]),
+    )
+
+    return [item for item in instances if item.get('seriesId') == selected_series_id], selected_series_id
+
+
+def _select_series_instances_by_rank(instances, rank=0):
+    series_stats = {}
+
+    for index, item in enumerate(instances):
+        series_id = item.get('seriesId')
+        if not series_id:
+            continue
+
+        stats = series_stats.setdefault(
+            series_id,
+            {
+                'count': 0,
+                'first_index': index,
+            },
+        )
+        stats['count'] += 1
+        if index < stats['first_index']:
+            stats['first_index'] = index
+
+    if not series_stats:
+        return instances, None
+
+    ranked_series = sorted(
+        series_stats.items(),
+        key=lambda kv: (-kv[1]['count'], kv[1]['first_index'], kv[0]),
+    )
+    ranked_index = min(max(rank, 0), len(ranked_series) - 1)
+    selected_series_id = ranked_series[ranked_index][0]
+
+    return [item for item in instances if item.get('seriesId') == selected_series_id], selected_series_id
 
 
 def _normalize_pixel_spacing(spacing, decimals=6):
@@ -426,7 +487,6 @@ def _build_study_index_from_orthanc(orthanc_study_id, base, auth):
         plane: {series_id: [] for series_id in series_ids}
         for plane in PLANES
     }
-
     classified_count = 0
     instance_pixel_spacing_cache = {}
     series_pixel_spacing_cache = {}
@@ -623,6 +683,7 @@ class BaseStudyPlaneView(APIView):
     
     def get(self, request, orthanc_study_id):
         force_refresh = _is_truthy(request.query_params.get('refresh'))
+        primary_only = _is_truthy(request.query_params.get('primaryOnly', 'true'))
         index_data, cache_hit, status_code = _get_study_index(
             orthanc_study_id,
             force_refresh=force_refresh,
@@ -638,14 +699,20 @@ class BaseStudyPlaneView(APIView):
             return Response({'error': 'Orthanc request failed'}, status=502)
 
         plane_data = index_data.get('planes', {}).get(self.plane, {'total': 0, 'instances': []})
+        instances = plane_data.get('instances', [])
+        if primary_only and instances:
+            series_rank = 1 if self.plane == 'axial' else 0
+            instances, _ = _select_series_instances_by_rank(instances, series_rank)
+
         return Response(
             {
                 'orthancStudyId': orthanc_study_id,
                 'plane': self.plane,
-                'total': plane_data.get('total', 0),
+                'total': len(instances) if primary_only else plane_data.get('total', 0),
                 'pixelSpacing': index_data.get('pixelSpacing'),
-                'instances': plane_data.get('instances', []),
+                'instances': instances,
                 'cacheHit': cache_hit,
+                'primaryOnly': primary_only,
             },
             status=200,
         )

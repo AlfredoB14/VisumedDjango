@@ -61,9 +61,9 @@ def classify_plane(orientation):
         if dominant_axis == 2:
             return 'axial'
         if dominant_axis == 0:
-            return 'sagittal'
-        if dominant_axis == 1:
             return 'coronal'
+        if dominant_axis == 1:
+            return 'sagittal'
     except Exception:
         return None
 
@@ -325,25 +325,28 @@ def get_study_images(request, study_id):
             ),
         )
 
+        # Calcular pixelSpacing ANTES de filtrar por primaryOnly
+        general_pixel_spacing = _resolve_general_pixel_spacing(
+            sorted_instances,
+            series_pixel_spacing_cache,
+        )
+
         selected_series_by_plane = {}
         selected_series_number_by_plane = {}
         if primary_only:
             selected_by_plane = _select_primary_series_by_plane(sorted_instances)
+            print(f"DEBUG: primary_only={primary_only}, selected_by_plane={selected_by_plane}, total_instances_before={len(sorted_instances)}")
             if selected_by_plane:
                 sorted_instances = [
                     item for item in sorted_instances
                     if item.get('plane') and selected_by_plane.get(item.get('plane')) == item.get('series_id')
                 ]
+                print(f"DEBUG: total_instances_after={len(sorted_instances)}")
                 selected_series_by_plane = selected_by_plane
                 selected_series_number_by_plane = {
                     plane: series_numbers.get(series_id, 0)
                     for plane, series_id in selected_by_plane.items()
                 }
-
-        general_pixel_spacing = _resolve_general_pixel_spacing(
-            sorted_instances,
-            series_pixel_spacing_cache,
-        )
 
         image_urls = []
         for instance in sorted_instances:
